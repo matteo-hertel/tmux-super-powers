@@ -1,5 +1,5 @@
 # Binaries
-tsp
+/tsp
 *.exe
 *.dll
 *.so
