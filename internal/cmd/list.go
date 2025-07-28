@@ -13,7 +13,7 @@ import (
 )
 
 var listCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "txl",
 	Short: "List and select tmux sessions",
 	Run: func(cmd *cobra.Command, args []string) {
 		sessions, err := getTmuxSessions()

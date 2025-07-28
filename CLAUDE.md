@@ -10,7 +10,12 @@ tmux-super-powers is a Go CLI tool that enhances tmux functionality using bubble
 
 ### Build
 ```bash
-go build -o tsp
+go build -o tsp ./cmd/tsp
+```
+
+### Install
+```bash
+go install ./cmd/tsp
 ```
 
 ### Dependencies
