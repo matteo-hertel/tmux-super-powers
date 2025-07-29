@@ -18,6 +18,11 @@ go build -o tsp ./cmd/tsp
 go install ./cmd/tsp
 ```
 
+### Install from remote
+```bash
+go install github.com/matteo-hertel/tmux-super-powers/cmd/tsp@latest
+```
+
 ### Dependencies
 ```bash
 go mod tidy

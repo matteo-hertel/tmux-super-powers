@@ -5,7 +5,7 @@ Enhanced tmux functionality with interactive TUI using bubbletea.
 ## Installation
 
 ```bash
-go install github.com/matteo-hertel/tmux-super-powers@latest
+go install github.com/matteo-hertel/tmux-super-powers/cmd/tsp@latest
 ```
 
 Or build from source:
