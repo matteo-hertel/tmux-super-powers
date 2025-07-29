@@ -4,16 +4,20 @@ Enhanced tmux functionality with interactive TUI using bubbletea.
 
 ## Installation
 
+Install the `tsp` binary:
+
 ```bash
 go install github.com/matteo-hertel/tmux-super-powers/cmd/tsp@latest
 ```
+
+**Note:** Make sure to include `/cmd/tsp` in the install command - this installs the binary as `tsp` rather than `tmux-super-powers`.
 
 Or build from source:
 
 ```bash
 git clone https://github.com/matteo-hertel/tmux-super-powers.git
 cd tmux-super-powers
-go build -o tsp
+go build -o tsp ./cmd/tsp
 ```
 
 ## Usage
