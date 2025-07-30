@@ -131,7 +131,7 @@ func createGitWorktreeSession(sessionName, path string) {
 	
 	exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", path, "nvim").Run()
 	
-	exec.Command("tmux", "split-window", "-h", "-t", sessionName, "-c", path, "claude").Run()
+	exec.Command("tmux", "split-window", "-h", "-t", sessionName, "-c", path, "claude --dangerously-skip-permissions").Run()
 	
 	exec.Command("tmux", "select-pane", "-t", sessionName+":0.0").Run()
 }
