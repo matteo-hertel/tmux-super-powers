@@ -10,10 +10,15 @@ import (
 type Config struct {
 	Directories []string `yaml:"directories"`
 	Sandbox     Sandbox  `yaml:"sandbox"`
+	Projects    Projects `yaml:"projects"`
 	Editor      string   `yaml:"editor"`
 }
 
 type Sandbox struct {
+	Path string `yaml:"path"`
+}
+
+type Projects struct {
 	Path string `yaml:"path"`
 }
 
@@ -62,6 +67,9 @@ func defaultConfig() *Config {
 		},
 		Sandbox: Sandbox{
 			Path: filepath.Join(os.Getenv("HOME"), "sandbox"),
+		},
+		Projects: Projects{
+			Path: filepath.Join(os.Getenv("HOME"), "projects"),
 		},
 		Editor: os.Getenv("EDITOR"),
 	}

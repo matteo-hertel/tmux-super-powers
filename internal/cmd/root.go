@@ -30,6 +30,7 @@ func init() {
 	rootCmd.AddCommand(txrmCmd)
 	rootCmd.AddCommand(dirCmd)
 	rootCmd.AddCommand(sandboxCmd)
+	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(wtxNewCmd)
 	rootCmd.AddCommand(wtxHereCmd)

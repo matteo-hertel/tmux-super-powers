@@ -38,8 +38,9 @@ go test ./...
 ### Command Structure
 The CLI uses cobra for command management with the following structure:
 - `tsp` (default) or `tsp list` - Session management
-- `tsp dir` - Directory selection (supports globs)
+- `tsp dir` - Directory selection (supports globs and ** for multi-level depth)
 - `tsp sandbox` - Sandbox project creation
+- `tsp project` - New project creation
 - `tsp config` - Configuration editing
 - `tsp wtx-new branch1 branch2 ...` - Create git worktrees with tmux sessions
 - `tsp wtx-here` - Create tmux session in current git repository
@@ -80,17 +81,21 @@ directories:
   - ~/work
   - ~/personal
   - ~/code/sandbox/*  # Glob patterns supported
+  - ~/deep-dirs/**   # Multi-level depth with **
 
 sandbox:
   path: ~/sandbox
+
+projects:
+  path: ~/projects
   
 editor: $EDITOR  # Falls back to vim if not set
 ```
 
 ### Directory Configuration
-- Supports glob patterns with `*` to match multiple directories
-- Only expands one level deep for glob patterns
-- Mixed static paths and glob patterns are supported
+- Supports glob patterns with `*` to match multiple directories (one level deep)
+- Supports `**` for multi-level directory traversal (up to 2 levels deep)
+- Mixed static paths, single-level globs (`*`), and multi-level globs (`**`) are supported
 
 ## Development Principles
 

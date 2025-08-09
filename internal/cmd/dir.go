@@ -205,7 +205,19 @@ func expandDirectories(patterns []string) ([]string, error) {
 	for _, pattern := range patterns {
 		expandedPattern := expandPath(pattern)
 		
-		if strings.Contains(expandedPattern, "*") {
+		// Check if pattern ends with ** for multi-level depth
+		if strings.HasSuffix(expandedPattern, "**") {
+			basePath := strings.TrimSuffix(expandedPattern, "**")
+			basePath = strings.TrimSuffix(basePath, string(os.PathSeparator))
+			
+			// Walk the directory tree up to 2 levels deep
+			err := walkDirectoryDepth(basePath, 2, func(path string) {
+				dirs = append(dirs, path)
+			})
+			if err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else if strings.Contains(expandedPattern, "*") {
 			matches, err := filepath.Glob(expandedPattern)
 			if err != nil {
 				return nil, err
@@ -224,6 +236,54 @@ func expandDirectories(patterns []string) ([]string, error) {
 	}
 	
 	return dirs, nil
+}
+
+// walkDirectoryDepth walks a directory tree up to maxDepth levels
+func walkDirectoryDepth(root string, maxDepth int, fn func(string)) error {
+	if maxDepth < 0 {
+		return nil
+	}
+	
+	// Check if root exists and is a directory
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	
+	// Add the root directory itself
+	fn(root)
+	
+	// Walk subdirectories
+	return walkDirectoryDepthRecursive(root, 0, maxDepth, fn)
+}
+
+func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, fn func(string)) error {
+	if currentDepth >= maxDepth {
+		return nil
+	}
+	
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	
+	for _, entry := range entries {
+		if entry.IsDir() {
+			path := filepath.Join(dir, entry.Name())
+			fn(path)
+			
+			// Recursively walk subdirectories
+			if err := walkDirectoryDepthRecursive(path, currentDepth+1, maxDepth, fn); err != nil {
+				// Continue even if we can't read a subdirectory
+				continue
+			}
+		}
+	}
+	
+	return nil
 }
 
 func openInTmux(dir string) {
