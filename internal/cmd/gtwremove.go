@@ -191,29 +191,43 @@ func getWorktrees() ([]Worktree, error) {
 
 func removeSelectedWorktrees(worktrees []Worktree, selected map[int]bool) {
 	repoName := getRepoName()
-	
+
 	for idx := range selected {
 		if idx >= len(worktrees) {
 			continue
 		}
-		
+
 		wt := worktrees[idx]
 		sessionName := fmt.Sprintf("%s-%s", repoName, wt.Branch)
-		
+
 		fmt.Printf("Removing worktree: %s (%s)\n", wt.Branch, wt.Path)
-		
+
+		// Kill tmux session first
 		if tmuxSessionExists(sessionName) {
 			fmt.Printf("  Killing tmux session '%s'...\n", sessionName)
 			exec.Command("tmux", "kill-session", "-t", sessionName).Run()
 		}
-		
+
+		// Remove the worktree reference
 		cmd := exec.Command("git", "worktree", "remove", wt.Path, "--force")
 		if err := cmd.Run(); err != nil {
 			fmt.Printf("  Error: Failed to remove worktree: %v\n", err)
-			continue
+			// Continue anyway to try to clean up the directory
+		} else {
+			fmt.Println("  Worktree removed successfully.")
 		}
-		fmt.Println("  Worktree removed successfully.")
-		
+
+		// Explicitly delete the directory to ensure complete cleanup
+		if _, err := os.Stat(wt.Path); err == nil {
+			fmt.Printf("  Removing directory '%s'...\n", wt.Path)
+			if err := os.RemoveAll(wt.Path); err != nil {
+				fmt.Printf("  Warning: Failed to remove directory: %v\n", err)
+			} else {
+				fmt.Println("  Directory removed successfully.")
+			}
+		}
+
+		// Delete the branch
 		cmd = exec.Command("git", "branch", "-D", wt.Branch)
 		if err := cmd.Run(); err != nil {
 			fmt.Printf("  Warning: Failed to delete branch '%s': %v\n", wt.Branch, err)
@@ -221,7 +235,7 @@ func removeSelectedWorktrees(worktrees []Worktree, selected map[int]bool) {
 			fmt.Printf("  Branch '%s' deleted successfully.\n", wt.Branch)
 		}
 	}
-	
+
 	fmt.Println("Worktree removal completed.")
 }
 
