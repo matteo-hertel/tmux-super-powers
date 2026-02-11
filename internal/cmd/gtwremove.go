@@ -227,6 +227,9 @@ func removeSelectedWorktrees(worktrees []Worktree, selected map[int]bool) {
 			}
 		}
 
+		// Clean up empty parent directories (whether git removed the dir or we did)
+		cleanupEmptyParents(wt.Path)
+
 		// Delete the branch
 		cmd = exec.Command("git", "branch", "-D", wt.Branch)
 		if err := cmd.Run(); err != nil {
@@ -249,4 +252,46 @@ func getRepoName() string {
 func tmuxSessionExists(sessionName string) bool {
 	cmd := exec.Command("tmux", "has-session", "-t", sessionName)
 	return cmd.Run() == nil
+}
+
+// isDirEmpty checks if a directory is empty
+func isDirEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
+// cleanupEmptyParents recursively removes empty parent directories
+// Stops at the home directory or repository root to avoid removing important directories
+func cleanupEmptyParents(path string) {
+	parent := filepath.Dir(path)
+
+	// Safety checks: don't remove home directory or root
+	homeDir, _ := os.UserHomeDir()
+	if parent == homeDir || parent == "/" || parent == "." {
+		return
+	}
+
+	// Don't remove the repository root
+	if repoRoot, err := getRepoRoot(); err == nil {
+		if parent == repoRoot {
+			return
+		}
+	}
+
+	// Check if parent directory exists and is empty
+	if info, err := os.Stat(parent); err == nil && info.IsDir() {
+		if isEmpty, err := isDirEmpty(parent); err == nil && isEmpty {
+			fmt.Printf("  Removing empty parent directory '%s'...\n", parent)
+			if err := os.Remove(parent); err != nil {
+				fmt.Printf("  Warning: Failed to remove empty directory: %v\n", err)
+			} else {
+				fmt.Println("  Empty directory removed successfully.")
+				// Recursively check the parent's parent
+				cleanupEmptyParents(parent)
+			}
+		}
+	}
 }
