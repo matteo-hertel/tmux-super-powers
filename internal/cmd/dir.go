@@ -56,13 +56,15 @@ var dirCmd = &cobra.Command{
 		textInput.Width = 50
 		
 		m := dirModel{
-			list:      list.New(items, delegate, 0, 0),
-			textInput: textInput,
-			allDirs:   dirs,
-			focusMode: 0,
+			list:          list.New(items, delegate, 0, 0),
+			textInput:     textInput,
+			allDirs:       dirs,
+			selectedPaths: make(map[string]bool),
+			focusMode:     0,
 		}
-		m.list.Title = "Select a directory"
+		m.list.Title = "Select directories (space=toggle, enter=confirm)"
 		m.list.SetShowHelp(false)
+		m.list.SetFilteringEnabled(false)
 
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		finalModel, err := p.Run()
@@ -71,26 +73,34 @@ var dirCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		if fm, ok := finalModel.(dirModel); ok && fm.selected != "" {
-			openInTmux(fm.selected)
+		if fm, ok := finalModel.(dirModel); ok {
+			openSelectedDirs(fm)
 		}
 	},
 }
 
 type dirItem struct {
-	path string
+	path     string
+	selected bool
 }
 
-func (i dirItem) Title() string       { return filepath.Base(i.path) }
+func (i dirItem) Title() string {
+	checkbox := "[ ] "
+	if i.selected {
+		checkbox = "[x] "
+	}
+	return checkbox + filepath.Base(i.path)
+}
 func (i dirItem) Description() string { return i.path }
 func (i dirItem) FilterValue() string { return filepath.Base(i.path) + " " + i.path }
 
 type dirModel struct {
-	list      list.Model
-	textInput textinput.Model
-	allDirs   []string
-	selected  string
-	focusMode int // 0 = filter input, 1 = list
+	list          list.Model
+	textInput     textinput.Model
+	allDirs       []string
+	selectedPaths map[string]bool
+	confirmed     bool
+	focusMode     int // 0 = filter input, 1 = list
 }
 
 func (m dirModel) Init() tea.Cmd {
@@ -104,37 +114,59 @@ func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		h, v := lipgloss.NewStyle().GetFrameSize()
-		m.list.SetSize(msg.Width-h, msg.Height-v-3) // Reserve space for filter input
+		m.list.SetSize(msg.Width-h, msg.Height-v-4)
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "tab":
-			if m.focusMode == 0 {
-				m.focusMode = 1
-				m.textInput.Blur()
-			} else {
-				m.focusMode = 0
-				m.textInput.Focus()
-				cmds = append(cmds, textinput.Blink)
-			}
-		case "enter":
-			if m.focusMode == 1 {
-				if i, ok := m.list.SelectedItem().(dirItem); ok {
-					m.selected = i.path
+		if m.focusMode == 0 {
+			// Filter input mode: only intercept control keys, let everything else go to textInput
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "tab", "down", "up":
+				if len(m.list.Items()) > 0 {
+					m.focusMode = 1
+					m.textInput.Blur()
+				}
+				return m, nil
+			case "enter":
+				if len(m.selectedPaths) > 0 {
+					m.confirmed = true
 					return m, tea.Quit
 				}
 			}
-		case "up", "k":
-			if m.focusMode == 0 && len(m.list.Items()) > 0 {
-				m.focusMode = 1
-				m.textInput.Blur()
-			}
-		case "down", "j":
-			if m.focusMode == 0 && len(m.list.Items()) > 0 {
-				m.focusMode = 1
-				m.textInput.Blur()
+		} else {
+			// List navigation mode
+			switch msg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			case "tab", "esc":
+				m.focusMode = 0
+				m.textInput.Focus()
+				cmds = append(cmds, textinput.Blink)
+				return m, tea.Batch(cmds...)
+			case " ":
+				if i, ok := m.list.SelectedItem().(dirItem); ok {
+					idx := m.list.Index()
+					i.selected = !i.selected
+					m.list.SetItem(idx, i)
+					if i.selected {
+						m.selectedPaths[i.path] = true
+					} else {
+						delete(m.selectedPaths, i.path)
+					}
+				}
+				return m, nil
+			case "enter":
+				if len(m.selectedPaths) > 0 {
+					m.confirmed = true
+					return m, tea.Quit
+				}
+				// Nothing toggled: open the highlighted item directly
+				if i, ok := m.list.SelectedItem().(dirItem); ok {
+					m.selectedPaths[i.path] = true
+					m.confirmed = true
+					return m, tea.Quit
+				}
 			}
 		}
 	}
@@ -143,7 +175,6 @@ func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.focusMode == 0 {
 		m.textInput, cmd = m.textInput.Update(msg)
 		cmds = append(cmds, cmd)
-		// Filter the list based on input
 		m.filterList()
 	} else {
 		m.list, cmd = m.list.Update(msg)
@@ -158,37 +189,45 @@ func (m dirModel) View() string {
 	if m.focusMode == 0 {
 		filterStyle = filterStyle.BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62"))
 	}
-	
+
 	filterView := filterStyle.Render(m.textInput.View())
 	listView := m.list.View()
-	
-	return fmt.Sprintf("%s\n%s", filterView, listView)
+	view := fmt.Sprintf("%s\n%s", filterView, listView)
+
+	if len(m.selectedPaths) > 0 {
+		var names []string
+		for path := range m.selectedPaths {
+			names = append(names, filepath.Base(path))
+		}
+		selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
+		view += "\n" + selectedStyle.Render(fmt.Sprintf("Selected (%d): %s", len(m.selectedPaths), strings.Join(names, ", ")))
+	}
+
+	return view
 }
 
 func (m *dirModel) filterList() {
 	filterText := strings.ToLower(strings.TrimSpace(m.textInput.Value()))
-	
+
 	if filterText == "" {
-		// Show all directories
 		items := make([]list.Item, len(m.allDirs))
 		for i, dir := range m.allDirs {
-			items[i] = dirItem{path: dir}
+			items[i] = dirItem{path: dir, selected: m.selectedPaths[dir]}
 		}
 		m.list.SetItems(items)
 		return
 	}
-	
-	// Filter directories
+
 	var filteredItems []list.Item
 	for _, dir := range m.allDirs {
 		dirName := strings.ToLower(filepath.Base(dir))
 		dirPath := strings.ToLower(dir)
-		
+
 		if strings.Contains(dirName, filterText) || strings.Contains(dirPath, filterText) {
-			filteredItems = append(filteredItems, dirItem{path: dir})
+			filteredItems = append(filteredItems, dirItem{path: dir, selected: m.selectedPaths[dir]})
 		}
 	}
-	
+
 	m.list.SetItems(filteredItems)
 }
 
@@ -269,6 +308,12 @@ func shouldIgnoreDir(name string, userIgnores map[string]bool) bool {
 		return true
 	}
 	return false
+}
+
+// isGitRoot checks if a directory is a git repo or worktree (has .git file or directory)
+func isGitRoot(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil
 }
 
 // isGitIgnored checks if a path is ignored by git
@@ -354,28 +399,42 @@ func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, ignoreS
 		if ignored[path] {
 			continue
 		}
-		fn(path)
-
-		// Recursively walk subdirectories
-		if err := walkDirectoryDepthRecursive(path, currentDepth+1, maxDepth, ignoreSet, fn); err != nil {
-			continue
+		if isGitRoot(path) {
+			// Git repo or worktree: include it, don't recurse into subdirs
+			fn(path)
+		} else {
+			// Plain directory: skip it, recurse to find repos/worktrees inside
+			if err := walkDirectoryDepthRecursive(path, currentDepth+1, maxDepth, ignoreSet, fn); err != nil {
+				continue
+			}
 		}
 	}
 
 	return nil
 }
 
-func openInTmux(dir string) {
-	sessionName := filepath.Base(dir)
-	
-	checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
-	if checkCmd.Run() != nil {
-		createSession(sessionName, dir)
+func openSelectedDirs(fm dirModel) {
+	if !fm.confirmed || len(fm.selectedPaths) == 0 {
+		return
 	}
-	
+
+	var paths []string
+	for path := range fm.selectedPaths {
+		paths = append(paths, path)
+	}
+
+	for _, path := range paths {
+		sessionName := filepath.Base(path)
+		checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
+		if checkCmd.Run() != nil {
+			createSession(sessionName, path)
+		}
+	}
+
+	// Switch/attach to the first created session
+	sessionName := filepath.Base(paths[0])
 	if os.Getenv("TMUX") != "" {
-		cmd := exec.Command("tmux", "switch-client", "-t", sessionName)
-		cmd.Run()
+		exec.Command("tmux", "switch-client", "-t", sessionName).Run()
 	} else {
 		cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
 		cmd.Stdin = os.Stdin
