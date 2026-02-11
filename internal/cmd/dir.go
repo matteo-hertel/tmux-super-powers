@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,7 @@ var dirCmd = &cobra.Command{
 			return
 		}
 
-		dirs, err := expandDirectories(cfg.Directories)
+		dirs, err := expandDirectories(cfg.Directories, cfg.IgnoreDirectories)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error expanding directories: %v\n", err)
 			os.Exit(1)
@@ -199,19 +200,20 @@ func expandPath(path string) string {
 	return path
 }
 
-func expandDirectories(patterns []string) ([]string, error) {
+func expandDirectories(patterns []string, ignoreDirectories []string) ([]string, error) {
 	var dirs []string
-	
+	ignoreSet := buildIgnoreSet(ignoreDirectories)
+
 	for _, pattern := range patterns {
 		expandedPattern := expandPath(pattern)
-		
+
 		// Check if pattern ends with ** for multi-level depth
 		if strings.HasSuffix(expandedPattern, "**") {
 			basePath := strings.TrimSuffix(expandedPattern, "**")
 			basePath = strings.TrimSuffix(basePath, string(os.PathSeparator))
-			
+
 			// Walk the directory tree up to 2 levels deep
-			err := walkDirectoryDepth(basePath, 2, func(path string) {
+			err := walkDirectoryDepth(basePath, 2, ignoreSet, func(path string) {
 				dirs = append(dirs, path)
 			})
 			if err != nil && !os.IsNotExist(err) {
@@ -222,11 +224,20 @@ func expandDirectories(patterns []string) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			
+
 			for _, match := range matches {
-				if info, err := os.Stat(match); err == nil && info.IsDir() {
-					dirs = append(dirs, match)
+				info, err := os.Stat(match)
+				if err != nil || !info.IsDir() {
+					continue
 				}
+				name := filepath.Base(match)
+				if shouldIgnoreDir(name, ignoreSet) {
+					continue
+				}
+				if isGitIgnored(match) {
+					continue
+				}
+				dirs = append(dirs, match)
 			}
 		} else {
 			if info, err := os.Stat(expandedPattern); err == nil && info.IsDir() {
@@ -234,16 +245,70 @@ func expandDirectories(patterns []string) ([]string, error) {
 			}
 		}
 	}
-	
+
 	return dirs, nil
 }
 
+// buildIgnoreSet creates a lookup set from user-configured ignore patterns
+func buildIgnoreSet(userIgnores []string) map[string]bool {
+	set := make(map[string]bool)
+	for _, name := range userIgnores {
+		set[strings.ToLower(name)] = true
+	}
+	return set
+}
+
+// shouldIgnoreDir returns true if a directory name should be excluded
+func shouldIgnoreDir(name string, userIgnores map[string]bool) bool {
+	// Skip hidden directories (starting with .)
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	// Skip user-configured ignores
+	if userIgnores[strings.ToLower(name)] {
+		return true
+	}
+	return false
+}
+
+// isGitIgnored checks if a path is ignored by git
+func isGitIgnored(path string) bool {
+	cmd := exec.Command("git", "check-ignore", "-q", path)
+	cmd.Dir = filepath.Dir(path)
+	err := cmd.Run()
+	// exit 0 = ignored, exit 1 = not ignored, exit 128 = not a git repo
+	return err == nil
+}
+
+// gitIgnoredSet returns a set of paths that are gitignored from a list of candidates
+func gitIgnoredSet(dir string, paths []string) map[string]bool {
+	ignored := make(map[string]bool)
+	if len(paths) == 0 {
+		return ignored
+	}
+
+	cmd := exec.Command("git", "check-ignore", "--stdin")
+	cmd.Dir = dir
+	cmd.Stdin = bytes.NewReader([]byte(strings.Join(paths, "\n")))
+	out, err := cmd.Output()
+	if err != nil {
+		return ignored
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			ignored[line] = true
+		}
+	}
+	return ignored
+}
+
 // walkDirectoryDepth walks a directory tree up to maxDepth levels
-func walkDirectoryDepth(root string, maxDepth int, fn func(string)) error {
+func walkDirectoryDepth(root string, maxDepth int, ignoreSet map[string]bool, fn func(string)) error {
 	if maxDepth < 0 {
 		return nil
 	}
-	
+
 	// Check if root exists and is a directory
 	info, err := os.Stat(root)
 	if err != nil {
@@ -252,37 +317,51 @@ func walkDirectoryDepth(root string, maxDepth int, fn func(string)) error {
 	if !info.IsDir() {
 		return nil
 	}
-	
+
 	// Add the root directory itself
 	fn(root)
-	
+
 	// Walk subdirectories
-	return walkDirectoryDepthRecursive(root, 0, maxDepth, fn)
+	return walkDirectoryDepthRecursive(root, 0, maxDepth, ignoreSet, fn)
 }
 
-func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, fn func(string)) error {
+func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, ignoreSet map[string]bool, fn func(string)) error {
 	if currentDepth >= maxDepth {
 		return nil
 	}
-	
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
-	
+
+	// Collect candidate directory paths for batch gitignore check
+	var candidates []string
 	for _, entry := range entries {
-		if entry.IsDir() {
-			path := filepath.Join(dir, entry.Name())
-			fn(path)
-			
-			// Recursively walk subdirectories
-			if err := walkDirectoryDepthRecursive(path, currentDepth+1, maxDepth, fn); err != nil {
-				// Continue even if we can't read a subdirectory
-				continue
-			}
+		if !entry.IsDir() {
+			continue
+		}
+		if shouldIgnoreDir(entry.Name(), ignoreSet) {
+			continue
+		}
+		candidates = append(candidates, filepath.Join(dir, entry.Name()))
+	}
+
+	// Batch check gitignored paths
+	ignored := gitIgnoredSet(dir, candidates)
+
+	for _, path := range candidates {
+		if ignored[path] {
+			continue
+		}
+		fn(path)
+
+		// Recursively walk subdirectories
+		if err := walkDirectoryDepthRecursive(path, currentDepth+1, maxDepth, ignoreSet, fn); err != nil {
+			continue
 		}
 	}
-	
+
 	return nil
 }
 

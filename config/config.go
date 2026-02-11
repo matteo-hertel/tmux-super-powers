@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Directories []string `yaml:"directories"`
-	Sandbox     Sandbox  `yaml:"sandbox"`
-	Projects    Projects `yaml:"projects"`
-	Editor      string   `yaml:"editor"`
+	Directories       []string `yaml:"directories"`
+	IgnoreDirectories []string `yaml:"ignore_directories"`
+	Sandbox           Sandbox  `yaml:"sandbox"`
+	Projects          Projects `yaml:"projects"`
+	Editor            string   `yaml:"editor"`
 }
 
 type Sandbox struct {
