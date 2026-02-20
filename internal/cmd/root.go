@@ -38,6 +38,11 @@ func init() {
 	rootCmd.AddCommand(middleCmd)
 	rootCmd.AddCommand(peekCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(dashCmd)
+	rootCmd.AddCommand(spawnCmd)
+	rootCmd.AddCommand(harvestCmd)
+	rootCmd.AddCommand(newCmd)
+	rootCmd.AddCommand(rmCmd)
 
 	// Add version flag
 	rootCmd.Flags().BoolP("version", "v", false, "Show version information")
