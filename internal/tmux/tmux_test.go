@@ -109,3 +109,53 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 		t.Error("IsInsideTmux() = true, want false")
 	}
 }
+
+func TestBuildSendKeysArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		text   string
+		want   []string
+	}{
+		{
+			name:   "simple text",
+			target: "myapp-fix:0.1",
+			text:   "fix the auth bug",
+			want:   []string{"send-keys", "-t", "myapp-fix:0.1", "fix the auth bug", "Enter"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildSendKeysArgs(tt.target, tt.text)
+			if len(got) != len(tt.want) {
+				t.Errorf("BuildSendKeysArgs() len = %d, want %d", len(got), len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("BuildSendKeysArgs()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestBuildListSessionsArgs(t *testing.T) {
+	args := BuildListSessionsArgs()
+	if args[0] != "list-sessions" {
+		t.Errorf("expected list-sessions, got %s", args[0])
+	}
+}
+
+func TestBuildCapturePaneArgs(t *testing.T) {
+	args := BuildCapturePaneArgs("mysession:0.1")
+	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e"}
+	if len(args) != len(expected) {
+		t.Fatalf("BuildCapturePaneArgs length = %d, want %d", len(args), len(expected))
+	}
+	for i, a := range args {
+		if a != expected[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
+		}
+	}
+}

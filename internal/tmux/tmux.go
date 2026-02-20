@@ -76,6 +76,27 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
+// BuildSendKeysArgs builds tmux send-keys args for sending text to a pane.
+func BuildSendKeysArgs(target, text string) []string {
+	return []string{"send-keys", "-t", target, text, "Enter"}
+}
+
+// SendKeys sends text to a tmux pane target (e.g., "session:0.1").
+func SendKeys(target, text string) error {
+	args := BuildSendKeysArgs(target, text)
+	return exec.Command("tmux", args...).Run()
+}
+
+// BuildListSessionsArgs builds tmux list-sessions args.
+func BuildListSessionsArgs() []string {
+	return []string{"list-sessions", "-F", "#{session_name}:#{session_path}:#{session_activity}"}
+}
+
+// BuildCapturePaneArgs builds tmux capture-pane args.
+func BuildCapturePaneArgs(target string) []string {
+	return []string{"capture-pane", "-t", target, "-p", "-e"}
+}
+
 // CreateTwoPaneSession creates a tmux session with a left and right pane.
 // Uses -c flag for directory — no shell injection via send-keys.
 func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
