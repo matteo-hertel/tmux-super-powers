@@ -9,11 +9,25 @@ import (
 )
 
 type Config struct {
-	Directories       []string `yaml:"directories"`
-	IgnoreDirectories []string `yaml:"ignore_directories"`
-	Sandbox           Sandbox  `yaml:"sandbox"`
-	Projects          Projects `yaml:"projects"`
-	Editor            string   `yaml:"editor"`
+	Directories       []string    `yaml:"directories"`
+	IgnoreDirectories []string    `yaml:"ignore_directories"`
+	Sandbox           Sandbox     `yaml:"sandbox"`
+	Projects          Projects    `yaml:"projects"`
+	Editor            string      `yaml:"editor"`
+	Dash              DashConfig  `yaml:"dash"`
+	Spawn             SpawnConfig `yaml:"spawn"`
+}
+
+type DashConfig struct {
+	RefreshMs     int      `yaml:"refresh_ms"`
+	ErrorPatterns []string `yaml:"error_patterns"`
+	PromptPattern string   `yaml:"prompt_pattern"`
+}
+
+type SpawnConfig struct {
+	WorktreeBase string `yaml:"worktree_base"`
+	AgentCommand string `yaml:"agent_command"`
+	DefaultSetup string `yaml:"default_setup"`
 }
 
 type Sandbox struct {
@@ -56,6 +70,26 @@ func LoadFrom(configPath string) (*Config, error) {
 		}
 	}
 
+	// Dash defaults
+	if cfg.Dash.RefreshMs == 0 {
+		cfg.Dash.RefreshMs = 500
+	}
+	if cfg.Dash.PromptPattern == "" {
+		cfg.Dash.PromptPattern = `\$\s*$`
+	}
+	if len(cfg.Dash.ErrorPatterns) == 0 {
+		cfg.Dash.ErrorPatterns = []string{"FAIL", "panic:", "Error:"}
+	}
+
+	// Spawn defaults
+	homeDir, _ := os.UserHomeDir()
+	if cfg.Spawn.AgentCommand == "" {
+		cfg.Spawn.AgentCommand = "claude --dangerously-skip-permissions"
+	}
+	if cfg.Spawn.WorktreeBase == "" {
+		cfg.Spawn.WorktreeBase = filepath.Join(homeDir, "work", "code")
+	}
+
 	return &cfg, nil
 }
 
@@ -87,6 +121,15 @@ func defaultConfig() *Config {
 			Path: filepath.Join(homeDir, "projects"),
 		},
 		Editor: os.Getenv("EDITOR"),
+		Dash: DashConfig{
+			RefreshMs:     500,
+			ErrorPatterns: []string{"FAIL", "panic:", "Error:"},
+			PromptPattern: `\$\s*$`,
+		},
+		Spawn: SpawnConfig{
+			WorktreeBase: filepath.Join(homeDir, "work", "code"),
+			AgentCommand: "claude --dangerously-skip-permissions",
+		},
 	}
 }
 

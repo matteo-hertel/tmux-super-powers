@@ -76,6 +76,63 @@ func TestLoad_EditorFallback(t *testing.T) {
 	}
 }
 
+func TestLoadDashConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	content := []byte(`
+directories:
+  - ~/projects
+dash:
+  refresh_ms: 300
+  error_patterns:
+    - "FAIL"
+    - "panic:"
+  prompt_pattern: "\\$\\s*$"
+spawn:
+  worktree_base: ~/work/code
+  agent_command: "claude --dangerously-skip-permissions"
+  default_setup: "cp ../.env .env"
+`)
+	os.WriteFile(configPath, content, 0644)
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Dash.RefreshMs != 300 {
+		t.Errorf("expected refresh_ms 300, got %d", cfg.Dash.RefreshMs)
+	}
+	if len(cfg.Dash.ErrorPatterns) != 2 {
+		t.Errorf("expected 2 error patterns, got %d", len(cfg.Dash.ErrorPatterns))
+	}
+	if cfg.Dash.PromptPattern != "\\$\\s*$" {
+		t.Errorf("unexpected prompt pattern: %s", cfg.Dash.PromptPattern)
+	}
+	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
+		t.Errorf("unexpected agent command: %s", cfg.Spawn.AgentCommand)
+	}
+	if cfg.Spawn.DefaultSetup != "cp ../.env .env" {
+		t.Errorf("unexpected default setup: %s", cfg.Spawn.DefaultSetup)
+	}
+}
+
+func TestDashConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	os.WriteFile(configPath, []byte("directories:\n  - ~/projects\n"), 0644)
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Dash.RefreshMs != 500 {
+		t.Errorf("expected default refresh_ms 500, got %d", cfg.Dash.RefreshMs)
+	}
+	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
+		t.Errorf("expected default agent command, got: %s", cfg.Spawn.AgentCommand)
+	}
+}
+
 func TestSaveAndLoad_RoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
