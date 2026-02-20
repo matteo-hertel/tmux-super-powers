@@ -46,6 +46,11 @@ The CLI uses cobra for command management with the following structure:
 - `tsp wtx-new branch1 branch2 ...` - Create git worktrees with tmux sessions
 - `tsp wtx-here` - Create tmux session in current git repository
 - `tsp wtx-rm` - Interactive worktree removal with multi-select
+- `tsp dash` - Real-time session dashboard (mission control)
+- `tsp spawn` - Deploy multiple AI agents in parallel worktrees
+- `tsp harvest` - Review diffs, create PRs, fix CI, address review comments
+- `tsp new` - Create new project (consolidates sandbox + project)
+- `tsp rm` - Remove sessions with smart worktree detection
 
 ### Key Components
 
@@ -105,6 +110,12 @@ editor: $EDITOR  # Falls back to vim if not set
 - **Consistent TUI Patterns**: All interactive elements use bubbletea consistently
 - **Minimal Dependencies**: Keep the dependency tree small and focused
 - **Fast Execution**: Commands should be responsive and quick to start
+
+### Parallel Agent Workflow
+1. `tsp spawn "task1" "task2" --dash` — deploy agents
+2. `tsp dash` — monitor in real-time
+3. `tsp harvest` — review diffs, create PRs, fix CI, merge
+4. `tsp rm` — clean up remaining sessions
 
 ## Key Dependencies
 
