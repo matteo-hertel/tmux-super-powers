@@ -6,10 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -152,90 +154,122 @@ func getWorktrees() ([]Worktree, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseWorktreesPorcelain(string(output)), nil
+}
+
+// parseWorktreesPorcelain parses the output of `git worktree list --porcelain`.
+// Skips the first entry (main worktree) by index.
+func parseWorktreesPorcelain(output string) []Worktree {
+	if output == "" {
+		return nil
+	}
 
 	var worktrees []Worktree
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	
-	var currentWorktree Worktree
-	isMainWorktree := true
-	
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+
+	var current Worktree
+	entryIndex := 0
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
-			if !isMainWorktree && currentWorktree.Path != "" && currentWorktree.Branch != "" {
-				worktrees = append(worktrees, currentWorktree)
+			if entryIndex > 0 && current.Path != "" && current.Branch != "" {
+				worktrees = append(worktrees, current)
 			}
-			currentWorktree = Worktree{}
-			isMainWorktree = true
+			current = Worktree{}
+			entryIndex++
 			continue
 		}
-		
+
 		if strings.HasPrefix(line, "worktree ") {
-			currentWorktree.Path = strings.TrimPrefix(line, "worktree ")
-			if len(worktrees) > 0 || strings.Contains(line, "-") {
-				isMainWorktree = false
-			}
+			current.Path = strings.TrimPrefix(line, "worktree ")
 		} else if strings.HasPrefix(line, "branch ") {
 			branch := strings.TrimPrefix(line, "branch ")
 			branch = strings.TrimPrefix(branch, "refs/heads/")
-			currentWorktree.Branch = branch
+			current.Branch = branch
 		}
 	}
-	
-	if !isMainWorktree && currentWorktree.Path != "" && currentWorktree.Branch != "" {
-		worktrees = append(worktrees, currentWorktree)
+
+	// Handle last entry (no trailing blank line)
+	if entryIndex > 0 && current.Path != "" && current.Branch != "" {
+		worktrees = append(worktrees, current)
 	}
 
-	return worktrees, nil
+	return worktrees
 }
 
 func removeSelectedWorktrees(worktrees []Worktree, selected map[int]bool) {
 	repoName := getRepoName()
 
+	// Collect selected worktrees
+	type selectedWorktree struct {
+		idx int
+		wt  Worktree
+	}
+	var toRemove []selectedWorktree
 	for idx := range selected {
-		if idx >= len(worktrees) {
-			continue
+		if idx < len(worktrees) {
+			toRemove = append(toRemove, selectedWorktree{idx: idx, wt: worktrees[idx]})
 		}
+	}
 
-		wt := worktrees[idx]
-		sessionName := fmt.Sprintf("%s-%s", repoName, wt.Branch)
+	// Phase 1: Parallel — kill tmux sessions and remove directories
+	var wg sync.WaitGroup
+	results := make([]string, len(worktrees))
 
-		fmt.Printf("Removing worktree: %s (%s)\n", wt.Branch, wt.Path)
+	for _, sw := range toRemove {
+		wg.Add(1)
+		go func(idx int, wt Worktree) {
+			defer wg.Done()
+			sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, wt.Branch))
+			var out strings.Builder
 
-		// Kill tmux session first
-		if tmuxSessionExists(sessionName) {
-			fmt.Printf("  Killing tmux session '%s'...\n", sessionName)
-			exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+			out.WriteString(fmt.Sprintf("Removing worktree: %s (%s)\n", wt.Branch, wt.Path))
+
+			if tmuxpkg.SessionExists(sessionName) {
+				out.WriteString(fmt.Sprintf("  Killing tmux session '%s'...\n", sessionName))
+				tmuxpkg.KillSession(sessionName)
+			}
+
+			if _, err := os.Stat(wt.Path); err == nil {
+				out.WriteString(fmt.Sprintf("  Removing directory '%s'...\n", wt.Path))
+				if err := os.RemoveAll(wt.Path); err != nil {
+					out.WriteString(fmt.Sprintf("  Warning: Failed to remove directory: %v\n", err))
+				} else {
+					out.WriteString("  Directory removed successfully.\n")
+				}
+			}
+
+			cleanupEmptyParentsCollect(wt.Path, &out)
+			results[idx] = out.String()
+		}(sw.idx, sw.wt)
+	}
+
+	wg.Wait()
+
+	// Print parallel phase results
+	for _, r := range results {
+		if r != "" {
+			fmt.Print(r)
 		}
+	}
 
-		// Remove the worktree reference
+	// Phase 2: Sequential — git operations (avoids lock contention)
+	for _, sw := range toRemove {
+		wt := sw.wt
+
 		cmd := exec.Command("git", "worktree", "remove", wt.Path, "--force")
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("  Error: Failed to remove worktree: %v\n", err)
-			// Continue anyway to try to clean up the directory
+			fmt.Printf("  Warning: git worktree remove failed for %s: %v\n", wt.Branch, err)
 		} else {
-			fmt.Println("  Worktree removed successfully.")
+			fmt.Printf("  Worktree reference for '%s' removed.\n", wt.Branch)
 		}
 
-		// Explicitly delete the directory to ensure complete cleanup
-		if _, err := os.Stat(wt.Path); err == nil {
-			fmt.Printf("  Removing directory '%s'...\n", wt.Path)
-			if err := os.RemoveAll(wt.Path); err != nil {
-				fmt.Printf("  Warning: Failed to remove directory: %v\n", err)
-			} else {
-				fmt.Println("  Directory removed successfully.")
-			}
-		}
-
-		// Clean up empty parent directories (whether git removed the dir or we did)
-		cleanupEmptyParents(wt.Path)
-
-		// Delete the branch
 		cmd = exec.Command("git", "branch", "-D", wt.Branch)
 		if err := cmd.Run(); err != nil {
 			fmt.Printf("  Warning: Failed to delete branch '%s': %v\n", wt.Branch, err)
 		} else {
-			fmt.Printf("  Branch '%s' deleted successfully.\n", wt.Branch)
+			fmt.Printf("  Branch '%s' deleted.\n", wt.Branch)
 		}
 	}
 
@@ -249,11 +283,6 @@ func getRepoName() string {
 	return "unknown"
 }
 
-func tmuxSessionExists(sessionName string) bool {
-	cmd := exec.Command("tmux", "has-session", "-t", sessionName)
-	return cmd.Run() == nil
-}
-
 // isDirEmpty checks if a directory is empty
 func isDirEmpty(path string) (bool, error) {
 	entries, err := os.ReadDir(path)
@@ -263,34 +292,30 @@ func isDirEmpty(path string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-// cleanupEmptyParents recursively removes empty parent directories
-// Stops at the home directory or repository root to avoid removing important directories
-func cleanupEmptyParents(path string) {
+// cleanupEmptyParentsCollect recursively removes empty parent directories, writing output to a builder
+// for use in concurrent goroutines
+func cleanupEmptyParentsCollect(path string, out *strings.Builder) {
 	parent := filepath.Dir(path)
 
-	// Safety checks: don't remove home directory or root
 	homeDir, _ := os.UserHomeDir()
 	if parent == homeDir || parent == "/" || parent == "." {
 		return
 	}
 
-	// Don't remove the repository root
 	if repoRoot, err := getRepoRoot(); err == nil {
 		if parent == repoRoot {
 			return
 		}
 	}
 
-	// Check if parent directory exists and is empty
 	if info, err := os.Stat(parent); err == nil && info.IsDir() {
 		if isEmpty, err := isDirEmpty(parent); err == nil && isEmpty {
-			fmt.Printf("  Removing empty parent directory '%s'...\n", parent)
+			out.WriteString(fmt.Sprintf("  Removing empty parent directory '%s'...\n", parent))
 			if err := os.Remove(parent); err != nil {
-				fmt.Printf("  Warning: Failed to remove empty directory: %v\n", err)
+				out.WriteString(fmt.Sprintf("  Warning: Failed to remove empty directory: %v\n", err))
 			} else {
-				fmt.Println("  Empty directory removed successfully.")
-				// Recursively check the parent's parent
-				cleanupEmptyParents(parent)
+				out.WriteString("  Empty directory removed successfully.\n")
+				cleanupEmptyParentsCollect(parent, out)
 			}
 		}
 	}

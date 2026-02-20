@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,9 +24,13 @@ type Projects struct {
 	Path string `yaml:"path"`
 }
 
+// Load loads config from the default path (~/.tmux-super-powers.yaml).
 func Load() (*Config, error) {
-	configPath := filepath.Join(os.Getenv("HOME"), ".tmux-super-powers.yaml")
-	
+	return LoadFrom(ConfigPath())
+}
+
+// LoadFrom loads config from a specific file path.
+func LoadFrom(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -39,6 +44,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// Expand $VAR style editor values
+	if strings.HasPrefix(cfg.Editor, "$") {
+		cfg.Editor = os.Getenv(cfg.Editor[1:])
+	}
+
 	if cfg.Editor == "" {
 		cfg.Editor = os.Getenv("EDITOR")
 		if cfg.Editor == "" {
@@ -49,33 +59,39 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// Save saves config to the default path.
 func Save(cfg *Config) error {
-	configPath := filepath.Join(os.Getenv("HOME"), ".tmux-super-powers.yaml")
-	
+	return SaveTo(cfg, ConfigPath())
+}
+
+// SaveTo saves config to a specific file path.
+func SaveTo(cfg *Config, configPath string) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(configPath, data, 0644)
 }
 
 func defaultConfig() *Config {
+	homeDir, _ := os.UserHomeDir()
 	return &Config{
 		Directories: []string{
-			filepath.Join(os.Getenv("HOME"), "projects"),
-			filepath.Join(os.Getenv("HOME"), "work"),
+			filepath.Join(homeDir, "projects"),
+			filepath.Join(homeDir, "work"),
 		},
 		Sandbox: Sandbox{
-			Path: filepath.Join(os.Getenv("HOME"), "sandbox"),
+			Path: filepath.Join(homeDir, "sandbox"),
 		},
 		Projects: Projects{
-			Path: filepath.Join(os.Getenv("HOME"), "projects"),
+			Path: filepath.Join(homeDir, "projects"),
 		},
 		Editor: os.Getenv("EDITOR"),
 	}
 }
 
+// ConfigPath returns the default config file path.
 func ConfigPath() string {
-	return filepath.Join(os.Getenv("HOME"), ".tmux-super-powers.yaml")
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".tmux-super-powers.yaml")
 }

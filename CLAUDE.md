@@ -37,7 +37,8 @@ go test ./...
 
 ### Command Structure
 The CLI uses cobra for command management with the following structure:
-- `tsp` (default) or `tsp list` - Session management
+- `tsp` (default) - Shows help/usage information
+- `tsp list` (alias: `txl`) - List and select tmux sessions
 - `tsp dir` - Directory selection (supports globs and ** for multi-level depth)
 - `tsp sandbox` - Sandbox project creation
 - `tsp project` - New project creation
@@ -50,7 +51,7 @@ The CLI uses cobra for command management with the following structure:
 
 **Main Entry Point**: `main.go` calls `cmd.Execute()`
 
-**Command Router**: `cmd/root.go` defines the root command and registers all subcommands. The default behavior runs the list command.
+**Command Router**: `internal/cmd/root.go` defines the root command and registers all subcommands. The default behavior shows help/usage information.
 
 **Configuration System**: `config/config.go` handles YAML configuration stored at `~/.tmux-super-powers.yaml`. The config automatically creates defaults if the file doesn't exist and falls back to environment variables (like `$EDITOR`).
 

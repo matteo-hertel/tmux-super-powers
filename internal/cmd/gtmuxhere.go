@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +36,7 @@ The session will have two panes:
 		}
 
 		repoName := filepath.Base(repoRoot)
-		sessionName := fmt.Sprintf("%s-%s", repoName, currentBranch)
+		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, currentBranch))
 		currentDir, _ := os.Getwd()
 
 		fmt.Printf("Creating tmux session '%s' in current directory...\n", sessionName)

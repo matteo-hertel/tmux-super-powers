@@ -9,12 +9,14 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 var listCmd = &cobra.Command{
-	Use:   "txl",
-	Short: "List and select tmux sessions",
+	Use:     "list",
+	Aliases: []string{"txl"},
+	Short:   "List and select tmux sessions",
 	Run: func(cmd *cobra.Command, args []string) {
 		sessions, err := getTmuxSessions()
 		if err != nil {
@@ -115,14 +117,5 @@ func getTmuxSessions() ([]string, error) {
 }
 
 func attachToSession(session string) {
-	if os.Getenv("TMUX") != "" {
-		cmd := exec.Command("tmux", "switch-client", "-t", session)
-		cmd.Run()
-	} else {
-		cmd := exec.Command("tmux", "attach-session", "-t", session)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Run()
-	}
+	tmuxpkg.AttachOrSwitch(session)
 }

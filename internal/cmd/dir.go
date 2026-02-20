@@ -13,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matteo-hertel/tmux-super-powers/config"
+	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -231,20 +233,12 @@ func (m *dirModel) filterList() {
 	m.list.SetItems(filteredItems)
 }
 
-func expandPath(path string) string {
-	if path[:2] == "~/" {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[2:])
-	}
-	return path
-}
-
 func expandDirectories(patterns []string, ignoreDirectories []string) ([]string, error) {
 	var dirs []string
 	ignoreSet := buildIgnoreSet(ignoreDirectories)
 
 	for _, pattern := range patterns {
-		expandedPattern := expandPath(pattern)
+		expandedPattern := pathutil.ExpandPath(pattern)
 
 		// Check if pattern ends with ** for multi-level depth
 		if strings.HasSuffix(expandedPattern, "**") {
@@ -424,34 +418,17 @@ func openSelectedDirs(fm dirModel) {
 	}
 
 	for _, path := range paths {
-		sessionName := filepath.Base(path)
-		checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
-		if checkCmd.Run() != nil {
+		sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
+		if !tmuxpkg.SessionExists(sessionName) {
 			createSession(sessionName, path)
 		}
 	}
 
 	// Switch/attach to the first created session
-	sessionName := filepath.Base(paths[0])
-	if os.Getenv("TMUX") != "" {
-		exec.Command("tmux", "switch-client", "-t", sessionName).Run()
-	} else {
-		cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Run()
-	}
+	sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(paths[0]))
+	tmuxpkg.AttachOrSwitch(sessionName)
 }
 
 func createSession(sessionName, dir string) {
-	exec.Command("tmux", "new-session", "-d", "-s", sessionName).Run()
-	
-	exec.Command("tmux", "send-keys", "-t", sessionName+":0", "cd "+dir+";nvim", "C-m").Run()
-	
-	exec.Command("tmux", "split-window", "-t", sessionName+":0", "-h", "-l", "35").Run()
-	
-	exec.Command("tmux", "select-pane", "-t", sessionName+":0.0").Run()
-	
-	exec.Command("tmux", "send-keys", "-t", sessionName+":0.1", "cd "+dir, "C-m").Run()
+	tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", "")
 }

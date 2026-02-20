@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +19,7 @@ var wtxNewCmd = &cobra.Command{
 For each branch:
 1. Creates the branch from current branch if it doesn't exist
 2. Creates worktree under ~/work/code/<repo-name>-<branch>
-3. Runs yarn in the worktree
+3. Detects and runs the appropriate package manager (yarn, npm, pnpm, bun)
 4. Creates tmux session with neovim (left) and claude (right)`,
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -66,12 +67,18 @@ For each branch:
 				}
 			}
 
-			fmt.Printf("Running yarn in '%s'...\n", worktreePath)
-			if err := runYarn(worktreePath); err != nil {
-				fmt.Printf("Warning: yarn failed in '%s': %v\n", worktreePath, err)
+			pm := detectPackageManager(repoRoot)
+			if pm != "" {
+				if pm == "yarn" {
+					copyYarnCache(repoRoot, worktreePath)
+				}
+				fmt.Printf("Running %s install in '%s'...\n", pm, worktreePath)
+				if err := runPackageManager(pm, worktreePath); err != nil {
+					fmt.Printf("Warning: %s install failed in '%s': %v\n", pm, worktreePath, err)
+				}
 			}
 
-			sessionName := fmt.Sprintf("%s-%s", repoName, branch)
+			sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branch))
 			fmt.Printf("Creating tmux session '%s' with neovim and claude...\n", sessionName)
 			createGitWorktreeSession(sessionName, worktreePath)
 
@@ -120,18 +127,68 @@ func createWorktree(path, branch string) error {
 	return cmd.Run()
 }
 
-func runYarn(path string) error {
-	cmd := exec.Command("yarn")
+func detectPackageManager(repoRoot string) string {
+	lockFiles := []struct {
+		file string
+		pm   string
+	}{
+		{"bun.lockb", "bun"},
+		{"bun.lock", "bun"},
+		{"pnpm-lock.yaml", "pnpm"},
+		{"yarn.lock", "yarn"},
+		{"package-lock.json", "npm"},
+	}
+	for _, lf := range lockFiles {
+		if _, err := os.Stat(filepath.Join(repoRoot, lf.file)); err == nil {
+			return lf.pm
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "package.json")); err == nil {
+		return "npm"
+	}
+	return ""
+}
+
+func copyYarnCache(repoRoot, worktreePath string) {
+	yarnDir := filepath.Join(worktreePath, ".yarn")
+	os.MkdirAll(yarnDir, 0755)
+
+	// Copy gitignored yarn artifacts that speed up installs
+	artifacts := []string{"cache", "install-state.gz", "unplugged"}
+	for _, name := range artifacts {
+		src := filepath.Join(repoRoot, ".yarn", name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(yarnDir, name)
+		if _, err := os.Stat(dst); err == nil {
+			continue // already exists in worktree
+		}
+		fmt.Printf("Copying .yarn/%s...\n", name)
+		cmd := exec.Command("cp", "-a", src, dst)
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Warning: failed to copy .yarn/%s: %v\n", name, err)
+		}
+	}
+}
+
+func runPackageManager(pm, path string) error {
+	var cmd *exec.Cmd
+	switch pm {
+	case "yarn":
+		cmd = exec.Command("yarn", "install")
+	case "pnpm":
+		cmd = exec.Command("pnpm", "install")
+	case "bun":
+		cmd = exec.Command("bun", "install")
+	default:
+		cmd = exec.Command("npm", "install")
+	}
 	cmd.Dir = path
 	return cmd.Run()
 }
 
 func createGitWorktreeSession(sessionName, path string) {
-	exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	
-	exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", path, "nvim").Run()
-	
-	exec.Command("tmux", "split-window", "-h", "-t", sessionName, "-c", path, "claude --dangerously-skip-permissions").Run()
-	
-	exec.Command("tmux", "select-pane", "-t", sessionName+":0.0").Run()
+	tmuxpkg.KillSession(sessionName)
+	tmuxpkg.CreateTwoPaneSession(sessionName, path, "nvim", "claude --dangerously-skip-permissions")
 }

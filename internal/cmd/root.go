@@ -35,6 +35,8 @@ func init() {
 	rootCmd.AddCommand(wtxNewCmd)
 	rootCmd.AddCommand(wtxHereCmd)
 	rootCmd.AddCommand(wtxRmCmd)
+	rootCmd.AddCommand(middleCmd)
+	rootCmd.AddCommand(peekCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	// Add version flag
