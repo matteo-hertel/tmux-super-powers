@@ -2,11 +2,13 @@ package service
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
@@ -15,6 +17,24 @@ import (
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9-]+`)
 var multiDash = regexp.MustCompile(`-{2,}`)
+
+// Memorable word pairs for unique session/branch suffixes.
+var adjectives = []string{
+	"red", "blue", "bold", "calm", "cold", "cool", "dark", "deep",
+	"dry", "fast", "gold", "gray", "keen", "loud", "mint", "pale",
+	"pink", "pure", "soft", "warm", "wide", "wild", "zen", "neon",
+}
+var nouns = []string{
+	"arch", "beam", "bolt", "cape", "claw", "coil", "dawn", "edge",
+	"fern", "flux", "glow", "haze", "iris", "jade", "knot", "lark",
+	"mars", "node", "oak", "peak", "reef", "sage", "tide", "volt",
+}
+
+// memorableSuffix returns a short, memorable two-word suffix like "bold-tide".
+func memorableSuffix() string {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return adjectives[r.Intn(len(adjectives))] + "-" + nouns[r.Intn(len(nouns))]
+}
 
 // TaskToBranch converts a task description to a git branch name.
 func TaskToBranch(task string) string {
@@ -71,7 +91,8 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 
 	var results []SpawnResult
 	for _, task := range tasks {
-		branch := TaskToBranch(task)
+		suffix := memorableSuffix()
+		branch := TaskToBranch(task) + "-" + suffix
 		branchShort := strings.TrimPrefix(branch, "spawn/")
 		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branchShort))
 		worktreePath := filepath.Join(worktreeBase, fmt.Sprintf("%s-%s", repoName, branchShort))
@@ -107,6 +128,9 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			tmuxpkg.KillSession(sessionName)
 		}
 		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentCmd)
+
+		// Wait for the agent command to start before sending the task prompt
+		time.Sleep(2 * time.Second)
 
 		target := fmt.Sprintf("%s:0.1", sessionName)
 		tmuxpkg.SendKeys(target, task)
