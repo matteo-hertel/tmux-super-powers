@@ -121,7 +121,7 @@ func TestBuildSendKeysArgs(t *testing.T) {
 			name:   "simple text",
 			target: "myapp-fix:0.1",
 			text:   "fix the auth bug",
-			want:   []string{"send-keys", "-t", "myapp-fix:0.1", "-l", "fix the auth bug"},
+			want:   []string{"send-keys", "-t", "myapp-fix:0.1", "-l", "fix the auth bug\n"},
 		},
 	}
 	for _, tt := range tests {
