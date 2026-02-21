@@ -42,209 +42,85 @@
     top: 0;
     z-index: 100;
   }
-  header h1 {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: -0.3px;
-  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
   header h1 span { color: var(--cyan); }
-  .health-bar {
-    display: flex;
-    gap: 16px;
-    align-items: center;
-    font-size: 13px;
-  }
-  .health-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .health-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-  }
+  .health-bar { display: flex; gap: 16px; align-items: center; font-size: 13px; }
+  .health-item { display: flex; align-items: center; gap: 6px; }
+  .health-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .health-dot.ok { background: var(--green); }
   .health-dot.fail { background: var(--red); }
-  .ws-status {
-    font-size: 12px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .ws-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    display: inline-block;
-  }
+  .ws-status { font-size: 12px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
+  .ws-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .ws-dot.connected { background: var(--green); }
   .ws-dot.disconnected { background: var(--red); }
 
-  main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 24px;
-  }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
   .tabs {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 20px;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0;
+    display: flex; gap: 4px; margin-bottom: 20px;
+    border-bottom: 1px solid var(--border); padding-bottom: 0;
   }
   .tab {
-    padding: 8px 16px;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 14px;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: all 0.15s;
+    padding: 8px 16px; background: none; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 14px; border-bottom: 2px solid transparent;
+    margin-bottom: -1px; transition: all 0.15s;
   }
   .tab:hover { color: var(--text); }
-  .tab.active {
-    color: var(--cyan);
-    border-bottom-color: var(--cyan);
-  }
+  .tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
 
-  /* Session cards */
-  .session-grid {
-    display: grid;
-    gap: 12px;
-  }
+  .session-grid { display: grid; gap: 12px; }
   .session-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    transition: border-color 0.15s;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; transition: border-color 0.15s;
   }
   .session-card:hover { border-color: var(--text-dim); }
   .session-header {
-    padding: 14px 16px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    cursor: pointer;
-    user-select: none;
+    padding: 14px 16px; display: flex; align-items: center;
+    justify-content: space-between; cursor: pointer; user-select: none;
   }
-  .session-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: 1;
-    min-width: 0;
-  }
-  .status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  .session-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
   .status-dot.active { background: var(--green); }
   .status-dot.idle { background: var(--orange); }
   .status-dot.done { background: var(--blue); }
   .status-dot.error { background: var(--red); }
-  .session-name {
-    font-weight: 600;
-    font-size: 15px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .session-meta {
-    display: flex;
-    gap: 16px;
-    color: var(--text-muted);
-    font-size: 13px;
-    flex-shrink: 0;
-  }
+  .session-name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-meta { display: flex; gap: 16px; color: var(--text-muted); font-size: 13px; flex-shrink: 0; }
   .session-meta .branch { color: var(--purple); }
-  .session-detail {
-    display: none;
-    border-top: 1px solid var(--border);
-    padding: 16px;
-  }
+  .session-detail { display: none; border-top: 1px solid var(--border); padding: 16px; }
   .session-card.expanded .session-detail { display: block; }
 
-  .detail-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 16px;
-  }
-  @media (max-width: 700px) {
-    .detail-grid { grid-template-columns: 1fr; }
-  }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  @media (max-width: 700px) { .detail-grid { grid-template-columns: 1fr; } }
   .detail-section h4 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-dim);
-    margin-bottom: 8px;
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); margin-bottom: 8px;
   }
-  .pane-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
+  .pane-list { display: flex; flex-direction: column; gap: 6px; }
   .pane-item {
-    background: var(--bg);
-    border-radius: 4px;
-    padding: 8px 10px;
-    font-size: 13px;
-    display: flex;
-    justify-content: space-between;
+    background: var(--bg); border-radius: 4px; padding: 8px 10px;
+    font-size: 13px; display: flex; justify-content: space-between;
   }
   .pane-type { color: var(--cyan); }
   .pane-process { color: var(--text-muted); }
-
-  .pr-info {
-    background: var(--bg);
-    border-radius: 4px;
-    padding: 10px;
-    font-size: 13px;
-  }
+  .pr-info { background: var(--bg); border-radius: 4px; padding: 10px; font-size: 13px; }
   .pr-info a { color: var(--blue); text-decoration: none; }
   .pr-info a:hover { text-decoration: underline; }
   .pr-detail { margin-top: 4px; color: var(--text-muted); }
-
-  .diff-stats {
-    display: flex;
-    gap: 12px;
-    font-size: 13px;
-    margin-top: 8px;
-  }
+  .diff-stats { display: flex; gap: 12px; font-size: 13px; margin-top: 8px; }
   .diff-files { color: var(--text-muted); }
   .diff-ins { color: var(--green); }
   .diff-del { color: var(--red); }
 
-  /* Action buttons */
   .actions-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--border);
   }
   .btn {
-    padding: 6px 14px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
+    padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text); font-size: 13px;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
   }
   .btn:hover { background: var(--bg-hover); border-color: var(--text-dim); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -252,90 +128,90 @@
   .btn.danger:hover { background: rgba(239,68,68,0.15); }
   .btn.primary { background: var(--cyan); color: var(--bg); border-color: var(--cyan); font-weight: 500; }
   .btn.primary:hover { opacity: 0.9; }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
 
-  /* Send command inline */
-  .send-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    align-items: center;
-  }
-  .send-row select,
-  .send-row input {
-    padding: 6px 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text);
-    font-size: 13px;
-    outline: none;
+  .send-row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  .send-row select, .send-row input {
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text); font-size: 13px; outline: none;
   }
   .send-row input { flex: 1; }
   .send-row select { width: 90px; }
-  .send-row input:focus,
-  .send-row select:focus { border-color: var(--cyan); }
+  .send-row input:focus, .send-row select:focus { border-color: var(--cyan); }
 
-  /* Forms */
   .form-panel {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px;
-    max-width: 560px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; max-width: 600px;
   }
-  .form-panel h3 {
-    font-size: 16px;
-    margin-bottom: 16px;
+  .form-panel h3 { font-size: 16px; margin-bottom: 16px; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+  .form-group input, .form-group textarea, .form-group select {
+    width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text); font-size: 14px; outline: none; font-family: inherit;
   }
-  .form-group {
-    margin-bottom: 14px;
-  }
-  .form-group label {
-    display: block;
-    font-size: 13px;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-  }
-  .form-group input,
-  .form-group textarea {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text);
-    font-size: 14px;
-    outline: none;
-    font-family: inherit;
-  }
-  .form-group textarea { resize: vertical; min-height: 100px; }
-  .form-group input:focus,
-  .form-group textarea:focus { border-color: var(--cyan); }
-  .form-hint {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-top: 3px;
-  }
+  .form-group textarea { resize: vertical; min-height: 80px; }
+  .form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: var(--cyan); }
+  .form-hint { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
 
-  /* Toast notifications */
+  /* Task list for spawn */
+  .task-list { display: flex; flex-direction: column; gap: 8px; }
+  .task-row { display: flex; gap: 8px; align-items: center; }
+  .task-row textarea {
+    flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input); color: var(--text); font-size: 14px; outline: none;
+    font-family: inherit; resize: vertical; min-height: 60px;
+  }
+  .task-row textarea:focus { border-color: var(--cyan); }
+  .task-row .task-num {
+    font-size: 12px; color: var(--text-dim); font-weight: 600; width: 24px;
+    text-align: center; flex-shrink: 0;
+  }
+  .task-row .btn-remove {
+    padding: 4px 8px; font-size: 16px; line-height: 1; color: var(--text-dim);
+    background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  .task-row .btn-remove:hover { color: var(--red); border-color: var(--red); }
+  .add-task-btn {
+    display: flex; align-items: center; gap: 6px; padding: 8px 12px; margin-top: 4px;
+    background: none; border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--text-muted); cursor: pointer; font-size: 13px; width: 100%;
+    justify-content: center; transition: all 0.15s;
+  }
+  .add-task-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+  /* Spawn results */
+  .spawn-results {
+    margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .spawn-results h4 {
+    padding: 10px 14px; background: var(--bg); font-size: 13px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .spawn-result-item {
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; font-size: 13px;
+  }
+  .spawn-result-item .result-status {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .spawn-result-item .result-status.ok { background: var(--green); }
+  .spawn-result-item .result-status.error { background: var(--red); }
+  .spawn-result-item .result-task { flex: 1; }
+  .spawn-result-item .result-branch { color: var(--purple); font-size: 12px; }
+  .spawn-result-item .result-session { color: var(--cyan); font-size: 12px; }
+  .spawn-result-item .result-error { color: var(--red); font-size: 12px; }
+
   .toast-container {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    z-index: 200;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    position: fixed; bottom: 20px; right: 20px; z-index: 200;
+    display: flex; flex-direction: column; gap: 8px;
   }
   .toast {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 10px 16px;
-    font-size: 13px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    animation: slideIn 0.2s ease;
-    max-width: 360px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 16px; font-size: 13px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4); animation: slideIn 0.2s ease; max-width: 360px;
   }
   .toast.success { border-left: 3px solid var(--green); }
   .toast.error { border-left: 3px solid var(--red); }
@@ -344,24 +220,13 @@
     from { transform: translateX(100%); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
   }
-
-  .empty-state {
-    text-align: center;
-    padding: 60px 20px;
-    color: var(--text-dim);
-  }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text-dim); }
   .empty-state h3 { color: var(--text-muted); margin-bottom: 8px; }
-
   .spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--border);
-    border-top-color: var(--cyan);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-    vertical-align: middle;
-    margin-right: 4px;
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--cyan);
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 4px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
@@ -412,7 +277,9 @@
       </div>
       <div class="form-group">
         <label for="createDir">Directory</label>
-        <input type="text" id="createDir" placeholder="/path/to/project">
+        <select id="createDir">
+          <option value="">Loading directories...</option>
+        </select>
       </div>
       <div class="form-group">
         <label for="createLeft">Left pane command (optional)</label>
@@ -431,8 +298,15 @@
     <div class="form-panel">
       <h3>Spawn Agents</h3>
       <div class="form-group">
-        <label for="spawnTasks">Tasks (one per line)</label>
-        <textarea id="spawnTasks" placeholder="Fix the login bug&#10;Add dark mode toggle&#10;Write unit tests for auth"></textarea>
+        <label>Tasks</label>
+        <div class="task-list" id="taskList">
+          <div class="task-row" data-idx="0">
+            <span class="task-num">1</span>
+            <textarea placeholder="Describe the task for this agent..." rows="2"></textarea>
+            <button class="btn-remove" title="Remove task" onclick="tspSpawn.removeTask(0)">&times;</button>
+          </div>
+        </div>
+        <button class="add-task-btn" onclick="tspSpawn.addTask()">+ Add another task</button>
       </div>
       <div class="form-group">
         <label for="spawnBase">Base branch (optional)</label>
@@ -442,7 +316,8 @@
         <input type="checkbox" id="spawnNoInstall">
         <label for="spawnNoInstall" style="margin:0">Skip dependency install</label>
       </div>
-      <button class="btn primary" id="btnSpawn">Spawn</button>
+      <button class="btn primary" id="btnSpawn">Spawn Agents</button>
+      <div id="spawnResults"></div>
     </div>
   </div>
 </main>
@@ -453,29 +328,28 @@
 (function() {
   "use strict";
 
-  // ------ State ------
-  let sessions = [];
-  let expandedSessions = new Set();
-  let ws = null;
-  let wsRetryMs = 1000;
-  const API = window.location.origin;
+  var sessions = [];
+  var expandedSessions = new Set();
+  var ws = null;
+  var wsRetryMs = 1000;
+  var configDirs = [];
+  var renderPending = false;
+  var API = window.location.origin;
 
-  // ------ Helpers ------
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
   function esc(s) {
     var d = document.createElement("div");
-    d.textContent = s;
+    d.textContent = s || "";
     return d.innerHTML;
   }
 
   function toast(msg, type) {
     type = type || "info";
-    var container = $("#toasts");
     var el = document.createElement("div");
     el.className = "toast " + type;
     el.textContent = msg;
-    container.appendChild(el);
+    $("#toasts").appendChild(el);
     setTimeout(function() { el.remove(); }, 4000);
   }
 
@@ -487,19 +361,25 @@
     }
     var resp = await fetch(API + path, opts);
     var data = await resp.json();
-    if (!resp.ok) {
-      throw new Error(data.error || ("HTTP " + resp.status));
-    }
+    if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
     return data;
   }
 
   function timeAgo(iso) {
     if (!iso) return "";
-    var d = new Date(iso);
-    var sec = Math.floor((Date.now() - d.getTime()) / 1000);
+    var sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
     if (sec < 60) return sec + "s ago";
     if (sec < 3600) return Math.floor(sec / 60) + "m ago";
     return Math.floor(sec / 3600) + "h ago";
+  }
+
+  // Returns true if the user is interacting inside the session grid
+  // (focused input, open select, etc.) — skip re-render to avoid disruption
+  function userInteracting() {
+    var active = document.activeElement;
+    if (!active || active === document.body) return false;
+    var grid = $("#sessionGrid");
+    return grid && grid.contains(active);
   }
 
   // ------ Tabs ------
@@ -512,13 +392,46 @@
     });
   });
 
+  // ------ Config (load directories) ------
+  async function loadConfig() {
+    try {
+      var data = await api("GET", "/api/config");
+      configDirs = [];
+      if (data.directories) {
+        data.directories.forEach(function(d) { configDirs.push(d); });
+      }
+      if (data.sandbox && data.sandbox.path) configDirs.push(data.sandbox.path);
+      if (data.projects && data.projects.path) configDirs.push(data.projects.path);
+      // Dedupe
+      configDirs = configDirs.filter(function(v, i, a) { return a.indexOf(v) === i; });
+      populateDirSelect();
+    } catch(e) {}
+  }
+
+  function populateDirSelect() {
+    var sel = $("#createDir");
+    sel.innerHTML = "";
+    if (configDirs.length === 0) {
+      sel.innerHTML = '<option value="">No directories configured</option>';
+      return;
+    }
+    configDirs.forEach(function(d) {
+      var opt = document.createElement("option");
+      opt.value = d;
+      opt.textContent = d;
+      sel.appendChild(opt);
+    });
+  }
+
+  loadConfig();
+
   // ------ Health ------
   async function fetchHealth() {
     try {
       var data = await api("GET", "/api/health");
       $("#healthTmux").className = "health-dot " + (data.tmux ? "ok" : "fail");
       $("#healthGh").className = "health-dot " + (data.gh ? "ok" : "fail");
-    } catch (e) {
+    } catch(e) {
       $("#healthTmux").className = "health-dot fail";
       $("#healthGh").className = "health-dot fail";
     }
@@ -530,7 +443,6 @@
   function connectWS() {
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(proto + "//" + location.host + "/api/ws");
-
     ws.onopen = function() {
       $("#wsDot").className = "ws-dot connected";
       $("#wsLabel").textContent = "live";
@@ -541,7 +453,13 @@
         var msg = JSON.parse(ev.data);
         if (msg.sessions) {
           sessions = msg.sessions;
-          renderSessions();
+          // Skip re-render if user is interacting — queue it instead
+          if (userInteracting()) {
+            renderPending = true;
+          } else {
+            renderSessions();
+            renderPending = false;
+          }
         }
       } catch(e) {}
     };
@@ -555,6 +473,16 @@
   }
   connectWS();
 
+  // Flush pending render when user stops interacting
+  document.addEventListener("focusout", function() {
+    setTimeout(function() {
+      if (renderPending && !userInteracting()) {
+        renderSessions();
+        renderPending = false;
+      }
+    }, 100);
+  });
+
   // ------ Render sessions ------
   function renderSessions() {
     var grid = $("#sessionGrid");
@@ -567,7 +495,6 @@
     }
     empty.style.display = "none";
 
-    // Preserve expanded state
     var html = "";
     sessions.forEach(function(s) {
       var expanded = expandedSessions.has(s.name);
@@ -587,7 +514,6 @@
       html += '<span style="text-transform:capitalize;">' + esc(statusClass) + '</span>';
       html += '</div></div>';
 
-      // Detail
       html += '<div class="session-detail">';
       html += '<div class="detail-grid">';
 
@@ -604,9 +530,8 @@
       html += '</div></div>';
 
       // PR + Diff
-      html += '<div class="detail-section">';
-      html += '<h4>Git / PR</h4>';
-      html += '<div class="pr-info" id="pr-' + esc(s.name) + '">';
+      html += '<div class="detail-section"><h4>Git / PR</h4>';
+      html += '<div class="pr-info">';
       if (s.pr) {
         html += '<a href="' + esc(s.pr.url) + '" target="_blank">PR #' + s.pr.number + '</a>';
         html += '<div class="pr-detail">CI: ' + esc(s.pr.ciStatus || "unknown") + ' | Reviews: ' + (s.pr.reviewCount || 0) + '</div>';
@@ -637,15 +562,15 @@
 
       // Send command
       html += '<div class="send-row">';
-      html += '<select id="pane-sel-' + esc(s.name) + '">';
+      html += '<select data-pane-sel="' + esc(s.name) + '">';
       if (s.panes) {
         s.panes.forEach(function(p) {
-          html += '<option value="' + p.index + '">Pane ' + p.index + '</option>';
+          html += '<option value="' + p.index + '">Pane ' + p.index + ' (' + esc(p.type) + ')</option>';
         });
       }
       html += '</select>';
-      html += '<input type="text" id="cmd-input-' + esc(s.name) + '" placeholder="Send command..." onkeydown="if(event.key===\'Enter\')tspActions.sendCmd(\'' + esc(s.name) + '\')">';
-      html += '<button class="btn primary" onclick="tspActions.sendCmd(\'' + esc(s.name) + '\')">Send</button>';
+      html += '<input type="text" data-cmd-input="' + esc(s.name) + '" placeholder="Send command..." onkeydown="if(event.key===\'Enter\'){event.stopPropagation();tspActions.sendCmd(\'' + esc(s.name) + '\')}">';
+      html += '<button class="btn primary btn-sm" onclick="tspActions.sendCmd(\'' + esc(s.name) + '\')">Send</button>';
       html += '</div>';
 
       html += '</div></div>';
@@ -653,9 +578,10 @@
 
     grid.innerHTML = html;
 
-    // Re-bind toggle
     $$("[data-toggle]").forEach(function(el) {
-      el.addEventListener("click", function() {
+      el.addEventListener("click", function(ev) {
+        // Don't toggle if click came from within send-row or actions-row
+        if (ev.target.closest(".send-row") || ev.target.closest(".actions-row")) return;
         var name = el.dataset.toggle;
         var card = el.closest(".session-card");
         if (expandedSessions.has(name)) {
@@ -664,7 +590,6 @@
         } else {
           expandedSessions.add(name);
           card.classList.add("expanded");
-          // Fetch enriched data when expanding
           fetchSessionDetail(name);
         }
       });
@@ -674,7 +599,6 @@
   async function fetchSessionDetail(name) {
     try {
       var data = await api("GET", "/api/sessions/" + encodeURIComponent(name));
-      // Update this session in our local state
       for (var i = 0; i < sessions.length; i++) {
         if (sessions[i].name === name) {
           sessions[i].pr = data.pr;
@@ -682,17 +606,17 @@
           break;
         }
       }
-      renderSessions();
+      if (!userInteracting()) renderSessions();
     } catch(e) {}
   }
 
-  // ------ Actions (global so onclick can reach them) ------
+  // ------ Session Actions ------
   window.tspActions = {
     async getPR(name) {
       try {
         var data = await api("GET", "/api/sessions/" + encodeURIComponent(name) + "/pr");
         if (data.pr) {
-          toast("PR #" + data.pr.number + " - " + data.pr.ciStatus, "success");
+          toast("PR #" + data.pr.number + " - CI: " + (data.pr.ciStatus || "unknown"), "success");
         } else {
           toast("No PR found for " + name, "info");
         }
@@ -740,8 +664,8 @@
     },
 
     async sendCmd(name) {
-      var paneSel = document.getElementById("pane-sel-" + name);
-      var cmdInput = document.getElementById("cmd-input-" + name);
+      var paneSel = document.querySelector('[data-pane-sel="' + name + '"]');
+      var cmdInput = document.querySelector('[data-cmd-input="' + name + '"]');
       if (!cmdInput || !cmdInput.value.trim()) return;
       var pane = paneSel ? parseInt(paneSel.value, 10) : 0;
       var text = cmdInput.value.trim();
@@ -756,7 +680,7 @@
   // ------ Create session ------
   $("#btnCreate").addEventListener("click", async function() {
     var name = $("#createName").value.trim();
-    var dir = $("#createDir").value.trim();
+    var dir = $("#createDir").value;
     var leftCmd = $("#createLeft").value.trim();
     var rightCmd = $("#createRight").value.trim();
     if (!name || !dir) {
@@ -767,39 +691,104 @@
       await api("POST", "/api/sessions", { name: name, dir: dir, leftCmd: leftCmd, rightCmd: rightCmd });
       toast("Session " + name + " created", "success");
       $("#createName").value = "";
-      $("#createDir").value = "";
       $("#createLeft").value = "";
       $("#createRight").value = "";
-      // Switch to sessions tab
       $$(".tab")[0].click();
     } catch(e) { toast(e.message, "error"); }
   });
 
-  // ------ Spawn ------
+  // ------ Spawn (dynamic task list) ------
+  var taskCounter = 1;
+
+  window.tspSpawn = {
+    addTask: function() {
+      var list = $("#taskList");
+      var idx = taskCounter++;
+      var row = document.createElement("div");
+      row.className = "task-row";
+      row.dataset.idx = idx;
+      row.innerHTML =
+        '<span class="task-num">' + (list.children.length + 1) + '</span>' +
+        '<textarea placeholder="Describe the task for this agent..." rows="2"></textarea>' +
+        '<button class="btn-remove" title="Remove task" onclick="tspSpawn.removeTask(' + idx + ')">&times;</button>';
+      list.appendChild(row);
+      row.querySelector("textarea").focus();
+      tspSpawn.renumber();
+    },
+
+    removeTask: function(idx) {
+      var list = $("#taskList");
+      if (list.children.length <= 1) return; // keep at least one
+      var row = list.querySelector('[data-idx="' + idx + '"]');
+      if (row) row.remove();
+      tspSpawn.renumber();
+    },
+
+    renumber: function() {
+      var rows = $$("#taskList .task-row");
+      rows.forEach(function(row, i) {
+        row.querySelector(".task-num").textContent = i + 1;
+      });
+    },
+
+    getTasks: function() {
+      var tasks = [];
+      $$("#taskList textarea").forEach(function(ta) {
+        var v = ta.value.trim();
+        if (v) tasks.push(v);
+      });
+      return tasks;
+    }
+  };
+
   $("#btnSpawn").addEventListener("click", async function() {
-    var raw = $("#spawnTasks").value.trim();
-    if (!raw) {
-      toast("Enter at least one task", "error");
+    var tasks = tspSpawn.getTasks();
+    if (tasks.length === 0) {
+      toast("Add at least one task", "error");
       return;
     }
-    var tasks = raw.split("\n").map(function(l) { return l.trim(); }).filter(Boolean);
     var base = $("#spawnBase").value.trim() || "";
     var noInstall = $("#spawnNoInstall").checked;
 
     var btn = $("#btnSpawn");
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Spawning...';
+    btn.innerHTML = '<span class="spinner"></span>Spawning ' + tasks.length + ' agent' + (tasks.length > 1 ? 's' : '') + '...';
 
     try {
       var data = await api("POST", "/api/spawn", { tasks: tasks, base: base, noInstall: noInstall });
-      var count = data.results ? data.results.length : 0;
-      toast(count + " agent(s) spawned", "success");
-      $("#spawnTasks").value = "";
-      $$(".tab")[0].click();
+      var results = data.results || [];
+      toast(results.length + " agent(s) spawned", "success");
+
+      // Show results
+      var resHtml = '<div class="spawn-results"><h4>Spawn Results</h4>';
+      results.forEach(function(r) {
+        resHtml += '<div class="spawn-result-item">';
+        resHtml += '<span class="result-status ' + (r.status === "ok" ? "ok" : "error") + '"></span>';
+        resHtml += '<span class="result-task">' + esc(r.task) + '</span>';
+        if (r.status === "ok") {
+          resHtml += '<span class="result-branch">' + esc(r.branch) + '</span>';
+          resHtml += '<span class="result-session">' + esc(r.session) + '</span>';
+        } else {
+          resHtml += '<span class="result-error">' + esc(r.error) + '</span>';
+        }
+        resHtml += '</div>';
+      });
+      resHtml += '</div>';
+      $("#spawnResults").innerHTML = resHtml;
+
+      // Clear task inputs
+      var list = $("#taskList");
+      list.innerHTML =
+        '<div class="task-row" data-idx="0">' +
+        '<span class="task-num">1</span>' +
+        '<textarea placeholder="Describe the task for this agent..." rows="2"></textarea>' +
+        '<button class="btn-remove" title="Remove task" onclick="tspSpawn.removeTask(0)">&times;</button>' +
+        '</div>';
+      taskCounter = 1;
     } catch(e) { toast(e.message, "error"); }
     finally {
       btn.disabled = false;
-      btn.textContent = "Spawn";
+      btn.textContent = "Spawn Agents";
     }
   });
 
