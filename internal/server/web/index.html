@@ -298,6 +298,13 @@
     <div class="form-panel">
       <h3>Spawn Agents</h3>
       <div class="form-group">
+        <label for="spawnDir">Project directory</label>
+        <select id="spawnDir">
+          <option value="">Loading directories...</option>
+        </select>
+        <div class="form-hint">The git repo where agents will create worktrees</div>
+      </div>
+      <div class="form-group">
         <label>Tasks</label>
         <div class="task-list" id="taskList">
           <div class="task-row" data-idx="0">
@@ -392,38 +399,36 @@
     });
   });
 
-  // ------ Config (load directories) ------
-  async function loadConfig() {
+  // ------ Directories (resolved from config, with globs expanded) ------
+  async function loadDirectories() {
     try {
-      var data = await api("GET", "/api/config");
-      configDirs = [];
-      if (data.directories) {
-        data.directories.forEach(function(d) { configDirs.push(d); });
-      }
-      if (data.sandbox && data.sandbox.path) configDirs.push(data.sandbox.path);
-      if (data.projects && data.projects.path) configDirs.push(data.projects.path);
-      // Dedupe
-      configDirs = configDirs.filter(function(v, i, a) { return a.indexOf(v) === i; });
-      populateDirSelect();
+      var data = await api("GET", "/api/directories");
+      configDirs = data.directories || [];
+      populateDirSelects();
     } catch(e) {}
   }
 
-  function populateDirSelect() {
-    var sel = $("#createDir");
-    sel.innerHTML = "";
-    if (configDirs.length === 0) {
-      sel.innerHTML = '<option value="">No directories configured</option>';
-      return;
-    }
-    configDirs.forEach(function(d) {
-      var opt = document.createElement("option");
-      opt.value = d;
-      opt.textContent = d;
-      sel.appendChild(opt);
+  function populateDirSelects() {
+    var selectors = [$("#createDir"), $("#spawnDir")];
+    selectors.forEach(function(sel) {
+      if (!sel) return;
+      sel.innerHTML = "";
+      if (configDirs.length === 0) {
+        sel.innerHTML = '<option value="">No directories found</option>';
+        return;
+      }
+      configDirs.forEach(function(d) {
+        var opt = document.createElement("option");
+        opt.value = d;
+        // Show short path (last 2 segments)
+        var parts = d.split("/");
+        opt.textContent = parts.length > 2 ? parts.slice(-2).join("/") : d;
+        sel.appendChild(opt);
+      });
     });
   }
 
-  loadConfig();
+  loadDirectories();
 
   // ------ Health ------
   async function fetchHealth() {
@@ -748,14 +753,20 @@
       return;
     }
     var base = $("#spawnBase").value.trim() || "";
+    var dir = $("#spawnDir").value || "";
     var noInstall = $("#spawnNoInstall").checked;
+
+    if (!dir) {
+      toast("Select a project directory", "error");
+      return;
+    }
 
     var btn = $("#btnSpawn");
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>Spawning ' + tasks.length + ' agent' + (tasks.length > 1 ? 's' : '') + '...';
 
     try {
-      var data = await api("POST", "/api/spawn", { tasks: tasks, base: base, noInstall: noInstall });
+      var data = await api("POST", "/api/spawn", { tasks: tasks, base: base, dir: dir, noInstall: noInstall });
       var results = data.results || [];
       toast(results.length + " agent(s) spawned", "success");
 

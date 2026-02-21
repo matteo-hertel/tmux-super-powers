@@ -45,8 +45,15 @@ type SpawnResult struct {
 }
 
 // SpawnAgents deploys agents with tasks into worktrees.
-func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.Config) ([]SpawnResult, error) {
-	repoRoot, err := spawnGetRepoRoot()
+// If repoDir is non-empty, it is used to find the git repo root; otherwise the server's cwd is used.
+func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.Config, repoDir string) ([]SpawnResult, error) {
+	var repoRoot string
+	var err error
+	if repoDir != "" {
+		repoRoot, err = spawnGetRepoRootFrom(repoDir)
+	} else {
+		repoRoot, err = spawnGetRepoRoot()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("not a git repository: %w", err)
 	}
@@ -113,6 +120,15 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 
 func spawnGetRepoRoot() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func spawnGetRepoRootFrom(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

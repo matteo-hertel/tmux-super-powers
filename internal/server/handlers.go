@@ -129,6 +129,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Tasks     []string `json:"tasks"`
 		Base      string   `json:"base"`
+		Dir       string   `json:"dir"`
 		NoInstall bool     `json:"noInstall"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -139,7 +140,7 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "tasks array is required")
 		return
 	}
-	results, err := service.SpawnAgents(req.Tasks, req.Base, req.NoInstall, s.cfg)
+	results, err := service.SpawnAgents(req.Tasks, req.Base, req.NoInstall, s.cfg, req.Dir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
