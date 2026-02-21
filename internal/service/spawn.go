@@ -80,7 +80,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 	repoName := filepath.Base(repoRoot)
 
 	if baseBranch == "" {
-		baseBranch, err = spawnGetCurrentBranch()
+		baseBranch, err = spawnGetCurrentBranch(repoRoot)
 		if err != nil {
 			return nil, fmt.Errorf("cannot determine current branch: %w", err)
 		}
@@ -99,8 +99,8 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 
 		result := SpawnResult{Task: task, Branch: branch, Session: sessionName}
 
-		if !spawnBranchExists(branch) {
-			if err := spawnCreateBranch(branch, baseBranch); err != nil {
+		if !spawnBranchExists(repoRoot, branch) {
+			if err := spawnCreateBranch(repoRoot, branch, baseBranch); err != nil {
 				result.Status = "error"
 				result.Error = fmt.Sprintf("branch creation failed: %v", err)
 				results = append(results, result)
@@ -109,7 +109,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		}
 
 		if _, err := os.Stat(worktreePath); err != nil {
-			if err := spawnCreateWorktree(worktreePath, branch); err != nil {
+			if err := spawnCreateWorktree(repoRoot, worktreePath, branch); err != nil {
 				result.Status = "error"
 				result.Error = fmt.Sprintf("worktree creation failed: %v", err)
 				results = append(results, result)
@@ -160,8 +160,8 @@ func spawnGetRepoRootFrom(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func spawnGetCurrentBranch() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+func spawnGetCurrentBranch(repoRoot string) (string, error) {
+	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -169,16 +169,16 @@ func spawnGetCurrentBranch() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func spawnBranchExists(branch string) bool {
-	return exec.Command("git", "show-ref", "--verify", "--quiet", fmt.Sprintf("refs/heads/%s", branch)).Run() == nil
+func spawnBranchExists(repoRoot, branch string) bool {
+	return exec.Command("git", "-C", repoRoot, "show-ref", "--verify", "--quiet", fmt.Sprintf("refs/heads/%s", branch)).Run() == nil
 }
 
-func spawnCreateBranch(branch, from string) error {
-	return exec.Command("git", "branch", branch, from).Run()
+func spawnCreateBranch(repoRoot, branch, from string) error {
+	return exec.Command("git", "-C", repoRoot, "branch", branch, from).Run()
 }
 
-func spawnCreateWorktree(path, branch string) error {
-	return exec.Command("git", "worktree", "add", path, branch).Run()
+func spawnCreateWorktree(repoRoot, path, branch string) error {
+	return exec.Command("git", "-C", repoRoot, "worktree", "add", path, branch).Run()
 }
 
 func spawnDetectPM(repoRoot string) string {
