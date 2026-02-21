@@ -116,3 +116,14 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 	exec.Command("tmux", "select-pane", "-t", name+":0.0").Run()
 	return nil
 }
+
+// GetPaneCwd returns the current working directory of a session's first pane.
+func GetPaneCwd(session string) string {
+	target := fmt.Sprintf("%s:0.0", session)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}

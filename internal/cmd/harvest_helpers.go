@@ -9,23 +9,6 @@ import (
 	"strings"
 )
 
-type worktreeInfo struct {
-	sessionName  string
-	branch       string
-	baseBranch   string
-	worktreePath string
-	filesChanged int
-	insertions   int
-	deletions    int
-	status       string // "ready", "wip", "clean"
-	diffOutput   string
-	aheadCount   int
-	prNumber     int
-	prURL        string
-	ciStatus     string // "pass", "fail", "pending", ""
-	reviewCount  int
-}
-
 type prComment struct {
 	File   string
 	Line   int
@@ -49,53 +32,6 @@ func parseDiffStat(output string) (files, insertions, deletions int) {
 		deletions, _ = strconv.Atoi(matches[3])
 	}
 	return
-}
-
-// collectWorktreeInfo gathers diff and PR data for a worktree.
-func collectWorktreeInfo(wt Worktree, repoName string) worktreeInfo {
-	info := worktreeInfo{
-		sessionName:  fmt.Sprintf("%s-%s", repoName, wt.Branch),
-		branch:       wt.Branch,
-		worktreePath: wt.Path,
-	}
-
-	// Get diff stat
-	statCmd := exec.Command("git", "-C", wt.Path, "diff", "--stat")
-	if out, err := statCmd.Output(); err == nil {
-		info.filesChanged, info.insertions, info.deletions = parseDiffStat(string(out))
-	}
-
-	// Determine status
-	if info.filesChanged > 0 {
-		info.status = "wip"
-	} else {
-		// Check commits ahead of base
-		logCmd := exec.Command("git", "-C", wt.Path, "log", "--oneline", "HEAD")
-		if out, err := logCmd.Output(); err == nil {
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			info.aheadCount = len(lines)
-		}
-		if info.aheadCount > 0 {
-			info.status = "ready"
-		} else {
-			info.status = "clean"
-		}
-	}
-
-	// Get full diff
-	diffCmd := exec.Command("git", "-C", wt.Path, "diff")
-	if out, err := diffCmd.Output(); err == nil {
-		info.diffOutput = string(out)
-	}
-
-	// Try to find PR
-	info.prNumber, info.prURL = findPRForBranch(wt.Branch)
-	if info.prNumber > 0 {
-		info.ciStatus = getCIStatus(info.prNumber)
-		info.reviewCount = getReviewCommentCount(info.prNumber)
-	}
-
-	return info
 }
 
 // findPRForBranch uses gh CLI to find a PR for the given branch.
