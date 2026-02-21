@@ -76,15 +76,19 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
-// BuildSendKeysArgs builds tmux send-keys args for sending text to a pane.
+// BuildSendKeysArgs builds tmux send-keys args for sending literal text to a pane.
 func BuildSendKeysArgs(target, text string) []string {
-	return []string{"send-keys", "-t", target, text, "Enter"}
+	return []string{"send-keys", "-t", target, "-l", text}
 }
 
-// SendKeys sends text to a tmux pane target (e.g., "session:0.1").
+// SendKeys sends text to a tmux pane target (e.g., "session:0.1") and presses Enter.
 func SendKeys(target, text string) error {
-	args := BuildSendKeysArgs(target, text)
-	return exec.Command("tmux", args...).Run()
+	// Send text literally (-l prevents tmux from interpreting key names)
+	if err := exec.Command("tmux", BuildSendKeysArgs(target, text)...).Run(); err != nil {
+		return err
+	}
+	// Press Enter as a separate command
+	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
 }
 
 // BuildListSessionsArgs builds tmux list-sessions args.
