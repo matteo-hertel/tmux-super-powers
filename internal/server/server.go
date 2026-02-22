@@ -8,8 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -192,69 +190,8 @@ func ParseSessionName(r *http.Request) string {
 }
 
 // handleDirectories returns resolved directory paths from the config.
+// Uses the same resolution logic as `tsp dir` (git repos, ignore hidden/gitignored).
 func (s *Server) handleDirectories(w http.ResponseWriter, r *http.Request) {
-	var dirs []string
-	for _, pattern := range s.cfg.Directories {
-		expanded := pathutil.ExpandPath(pattern)
-		if strings.HasSuffix(expanded, "**") {
-			// Multi-level glob: walk up to 2 levels deep
-			base := strings.TrimSuffix(expanded, "**")
-			base = strings.TrimSuffix(base, string(os.PathSeparator))
-			collectSubdirs(base, 0, 2, &dirs)
-		} else if strings.Contains(expanded, "*") {
-			matches, err := filepath.Glob(expanded)
-			if err != nil {
-				continue
-			}
-			for _, m := range matches {
-				if info, err := os.Stat(m); err == nil && info.IsDir() {
-					dirs = append(dirs, m)
-				}
-			}
-		} else {
-			if info, err := os.Stat(expanded); err == nil && info.IsDir() {
-				dirs = append(dirs, expanded)
-			}
-		}
-	}
-	// Add sandbox and projects paths
-	if p := pathutil.ExpandPath(s.cfg.Sandbox.Path); p != "" {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			dirs = append(dirs, p)
-		}
-	}
-	if p := pathutil.ExpandPath(s.cfg.Projects.Path); p != "" {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			dirs = append(dirs, p)
-		}
-	}
-	// Dedupe
-	seen := make(map[string]bool)
-	var unique []string
-	for _, d := range dirs {
-		if !seen[d] {
-			seen[d] = true
-			unique = append(unique, d)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"directories": unique})
-}
-
-// collectSubdirs walks a directory tree collecting subdirectories up to maxDepth levels.
-func collectSubdirs(dir string, depth, maxDepth int, dirs *[]string) {
-	if depth >= maxDepth {
-		return
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		*dirs = append(*dirs, path)
-		collectSubdirs(path, depth+1, maxDepth, dirs)
-	}
+	dirs := pathutil.ExpandDirectories(s.cfg.Directories, s.cfg.IgnoreDirectories)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"directories": pathutil.DedupeStrings(dirs)})
 }
