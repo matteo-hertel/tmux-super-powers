@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 )
 
@@ -297,6 +298,74 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "merged"})
+}
+
+func (s *Server) handlePairInitiate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Name == "" {
+		req.Name = "unnamed device"
+	}
+	code, err := s.pairing.Initiate(req.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"code":    code,
+		"address": r.Host,
+	})
+}
+
+func (s *Server) handlePairComplete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	deviceName, err := s.pairing.Complete(req.Code)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	name := req.Name
+	if name == "" {
+		name = deviceName
+	}
+	token := device.GenerateToken()
+	id := device.GenerateDeviceID()
+	d := device.Device{
+		ID:       id,
+		Name:     name,
+		Token:    token,
+		PairedAt: time.Now().UTC(),
+	}
+	if err := s.deviceStore.Add(d); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save device")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"token":     token,
+		"device_id": id,
+	})
+}
+
+func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "code query param required")
+		return
+	}
+	claimed, name := s.pairing.Status(code)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"claimed":     claimed,
+		"device_name": name,
+	})
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {

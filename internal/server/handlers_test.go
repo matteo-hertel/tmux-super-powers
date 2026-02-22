@@ -3,15 +3,35 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/matteo-hertel/tmux-super-powers/config"
+	"github.com/matteo-hertel/tmux-super-powers/internal/auth"
+	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 )
 
 // newTestServer creates a Server with a properly initialised monitor for testing.
 func newTestServer() *Server {
+	tmpDir, _ := os.MkdirTemp("", "tsp-test-*")
+	deviceStore := device.NewStore(filepath.Join(tmpDir, "devices.json"))
+	adminToken := "tsp_admin_testtoken"
+	authMw := auth.NewMiddleware(adminToken, deviceStore)
+
 	return &Server{
+		cfg:     &config.Config{},
 		monitor: service.NewMonitor(500, nil, ""),
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		},
+		deviceStore:    deviceStore,
+		pairing:        device.NewPairingManager(5 * time.Minute),
+		adminToken:     adminToken,
+		authMiddleware: authMw,
 	}
 }
 

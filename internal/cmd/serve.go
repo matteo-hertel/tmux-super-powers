@@ -56,7 +56,11 @@ Daemon management:
 
 		bindAddr := server.ResolveBindAddress(bind)
 
-		srv := server.New(cfg)
+		srv, err := server.New(cfg, config.TspDir())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error initialising server: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Graceful shutdown
 		sigCh := make(chan os.Signal, 1)

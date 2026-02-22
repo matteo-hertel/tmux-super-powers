@@ -8,11 +8,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/matteo-hertel/tmux-super-powers/config"
+	"github.com/matteo-hertel/tmux-super-powers/internal/auth"
+	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 )
@@ -22,14 +25,28 @@ var indexHTML []byte
 
 // Server is the HTTP/WebSocket API server.
 type Server struct {
-	cfg      *config.Config
-	monitor  *service.Monitor
-	upgrader websocket.Upgrader
-	httpSrv  *http.Server
+	cfg            *config.Config
+	monitor        *service.Monitor
+	upgrader       websocket.Upgrader
+	httpSrv        *http.Server
+	deviceStore    *device.Store
+	pairing        *device.PairingManager
+	adminToken     string
+	authMiddleware *auth.Middleware
 }
 
 // New creates a new API server.
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config, tspDir string) (*Server, error) {
+	deviceStore := device.NewStore(filepath.Join(tspDir, "devices.json"))
+
+	adminToken, err := auth.LoadOrCreateAdminToken(filepath.Join(tspDir, "admin-token"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load/create admin token: %w", err)
+	}
+
+	pairing := device.NewPairingManager(5 * time.Minute)
+	authMiddleware := auth.NewMiddleware(adminToken, deviceStore)
+
 	return &Server{
 		cfg: cfg,
 		monitor: service.NewMonitor(
@@ -40,7 +57,11 @@ func New(cfg *config.Config) *Server {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-	}
+		deviceStore:    deviceStore,
+		pairing:        pairing,
+		adminToken:     adminToken,
+		authMiddleware: authMiddleware,
+	}, nil
 }
 
 // Start starts the monitor and HTTP server.
@@ -53,7 +74,7 @@ func (s *Server) Start(bind string, port int) error {
 	addr := fmt.Sprintf("%s:%d", bind, port)
 	s.httpSrv = &http.Server{
 		Addr:         addr,
-		Handler:      withLogging(withCORS(mux)),
+		Handler:      withLogging(withCORS(s.authMiddleware.Wrap(mux))),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -99,6 +120,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{name}/fix-reviews", s.handleFixReviews)
 	mux.HandleFunc("POST /api/sessions/{name}/merge", s.handleMerge)
 
+	// Pairing
+	mux.HandleFunc("POST /api/pair/initiate", s.handlePairInitiate)
+	mux.HandleFunc("POST /api/pair/complete", s.handlePairComplete)
+	mux.HandleFunc("GET /api/pair/status", s.handlePairStatus)
+
 	// WebSocket
 	mux.HandleFunc("GET /api/ws", s.handleWebSocket)
 }
@@ -139,7 +165,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
