@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
+
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 )
 
 type sessionInfo struct {
@@ -79,4 +82,29 @@ func formatTimeSince(since, now time.Time) string {
 	default:
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	}
+}
+
+// detectSessionGitInfo checks if a session's working directory is inside a git repo.
+// Returns the git toplevel path and current branch name, or empty strings if not a git repo.
+func detectSessionGitInfo(sessionName string) (gitPath, branch string) {
+	cwd := tmuxpkg.GetPaneCwd(sessionName)
+	if cwd == "" {
+		return "", ""
+	}
+	// Check if it's a git repo and get the toplevel
+	topCmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
+	topOut, err := topCmd.Output()
+	if err != nil {
+		return "", ""
+	}
+	gitPath = strings.TrimSpace(string(topOut))
+
+	// Get current branch
+	branchCmd := exec.Command("git", "-C", gitPath, "rev-parse", "--abbrev-ref", "HEAD")
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		return gitPath, ""
+	}
+	branch = strings.TrimSpace(string(branchOut))
+	return gitPath, branch
 }

@@ -76,15 +76,18 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
-// BuildSendKeysArgs builds tmux send-keys args for sending text to a pane.
+// BuildSendKeysArgs builds tmux send-keys args for sending literal text to a pane.
 func BuildSendKeysArgs(target, text string) []string {
-	return []string{"send-keys", "-t", target, text, "Enter"}
+	return []string{"send-keys", "-t", target, "-l", text}
 }
 
-// SendKeys sends text to a tmux pane target (e.g., "session:0.1").
+// SendKeys sends literal text to a tmux pane target and presses Enter.
+// Uses -l for literal text (prevents key name interpretation), then C-m for Enter.
 func SendKeys(target, text string) error {
-	args := BuildSendKeysArgs(target, text)
-	return exec.Command("tmux", args...).Run()
+	if err := exec.Command("tmux", BuildSendKeysArgs(target, text)...).Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "send-keys", "-t", target, "C-m").Run()
 }
 
 // BuildListSessionsArgs builds tmux list-sessions args.
@@ -115,4 +118,15 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 
 	exec.Command("tmux", "select-pane", "-t", name+":0.0").Run()
 	return nil
+}
+
+// GetPaneCwd returns the current working directory of a session's first pane.
+func GetPaneCwd(session string) string {
+	target := fmt.Sprintf("%s:0.0", session)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }

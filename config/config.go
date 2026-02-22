@@ -16,6 +16,7 @@ type Config struct {
 	Editor            string      `yaml:"editor"`
 	Dash              DashConfig  `yaml:"dash"`
 	Spawn             SpawnConfig `yaml:"spawn"`
+	Serve             ServeConfig `yaml:"serve"`
 }
 
 type DashConfig struct {
@@ -28,6 +29,12 @@ type SpawnConfig struct {
 	WorktreeBase string `yaml:"worktree_base"`
 	AgentCommand string `yaml:"agent_command"`
 	DefaultSetup string `yaml:"default_setup"`
+}
+
+type ServeConfig struct {
+	Port      int    `yaml:"port"`
+	Bind      string `yaml:"bind"`
+	RefreshMs int    `yaml:"refresh_ms"`
 }
 
 type Sandbox struct {
@@ -90,6 +97,14 @@ func LoadFrom(configPath string) (*Config, error) {
 		cfg.Spawn.WorktreeBase = filepath.Join(homeDir, "work", "code")
 	}
 
+	// Serve defaults
+	if cfg.Serve.Port == 0 {
+		cfg.Serve.Port = 7777
+	}
+	if cfg.Serve.RefreshMs == 0 {
+		cfg.Serve.RefreshMs = cfg.Dash.RefreshMs
+	}
+
 	return &cfg, nil
 }
 
@@ -129,6 +144,10 @@ func defaultConfig() *Config {
 		Spawn: SpawnConfig{
 			WorktreeBase: filepath.Join(homeDir, "work", "code"),
 			AgentCommand: "claude --dangerously-skip-permissions",
+		},
+		Serve: ServeConfig{
+			Port:      7777,
+			RefreshMs: 500,
 		},
 	}
 }

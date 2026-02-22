@@ -51,6 +51,7 @@ The CLI uses cobra for command management with the following structure:
 - `tsp harvest` - Review diffs, create PRs, fix CI, address review comments
 - `tsp new` - Create new project (consolidates sandbox + project)
 - `tsp rm` - Remove sessions with smart worktree detection
+- `tsp serve` - HTTP/WebSocket API server for mobile app access
 
 ### Key Components
 
@@ -117,6 +118,14 @@ editor: $EDITOR  # Falls back to vim if not set
 3. `tsp harvest` — review diffs, create PRs, fix CI, merge
 4. `tsp rm` — clean up remaining sessions
 
+### API Server
+- `tsp serve` starts the API server on the Tailscale interface (port 7777 by default)
+- `tsp serve --install` installs as a launchd daemon (auto-start on login)
+- `tsp serve --uninstall` removes the launchd daemon
+- REST endpoints at `/api/sessions`, `/api/spawn`, `/api/sessions/{name}/pr`, etc.
+- WebSocket at `/api/ws` for real-time session streaming
+- Configuration via `serve` section in `~/.tmux-super-powers.yaml` (port, bind, refresh_ms)
+
 ## Key Dependencies
 
 - `github.com/charmbracelet/bubbletea` - TUI framework
@@ -124,3 +133,4 @@ editor: $EDITOR  # Falls back to vim if not set
 - `github.com/charmbracelet/lipgloss` - Terminal styling
 - `github.com/spf13/cobra` - CLI framework
 - `gopkg.in/yaml.v3` - YAML configuration parsing
+- `github.com/gorilla/websocket` - WebSocket support for API server
