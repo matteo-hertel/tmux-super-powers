@@ -44,6 +44,7 @@ func init() {
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(cleanupCmd)
+	rootCmd.AddCommand(deviceCmd)
 
 	// Add version flag
 	rootCmd.Flags().BoolP("version", "v", false, "Show version information")
