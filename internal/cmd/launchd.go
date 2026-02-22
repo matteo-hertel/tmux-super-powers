@@ -21,6 +21,13 @@ var plistTemplate = template.Must(template.New("plist").Parse(`<?xml version="1.
         <string>{{.Binary}}</string>
         <string>serve</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{.Path}}</string>
+        <key>HOME</key>
+        <string>{{.Home}}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -52,14 +59,21 @@ func installLaunchd() {
 		binary, _ = os.Executable()
 	}
 
+	home, _ := os.UserHomeDir()
+	currentPath := os.Getenv("PATH")
+
 	data := struct {
 		Label  string
 		Binary string
 		LogDir string
+		Path   string
+		Home   string
 	}{
 		Label:  plistLabel,
 		Binary: binary,
 		LogDir: logDir(),
+		Path:   currentPath,
+		Home:   home,
 	}
 
 	path := plistPath()
