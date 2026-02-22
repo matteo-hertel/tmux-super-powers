@@ -91,7 +91,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req) // optional body
 
-	err := service.KillSession(name, req.CleanupWorktree && session.IsWorktree, session.WorktreePath, session.Branch)
+	err := service.KillSession(name, req.CleanupWorktree && session.IsWorktree, session.WorktreePath, session.Branch, session.GitPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(cleanupCmd)
 
 	// Add version flag
 	rootCmd.Flags().BoolP("version", "v", false, "Show version information")

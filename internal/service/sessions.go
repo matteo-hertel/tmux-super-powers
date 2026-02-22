@@ -3,7 +3,9 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -139,50 +141,128 @@ func CapturePaneContent(session string, pane int) string {
 	return string(out)
 }
 
+// GitInfo holds git repository metadata for a session.
+type GitInfo struct {
+	GitPath      string // toplevel of the main repo
+	Branch       string
+	IsWorktree   bool
+	WorktreePath string // the worktree directory (only set when IsWorktree is true)
+}
+
 // DetectSessionGitInfo checks if a session's working directory is inside a git repo.
 // Returns the git toplevel path and current branch name, or empty strings if not a git repo.
 func DetectSessionGitInfo(sessionName string) (gitPath, branch string) {
+	info := DetectSessionGitInfoFull(sessionName)
+	return info.GitPath, info.Branch
+}
+
+// DetectSessionGitInfoFull checks if a session's working directory is inside a git repo
+// and detects whether it is a git worktree.
+func DetectSessionGitInfoFull(sessionName string) GitInfo {
 	cwd := tmuxpkg.GetPaneCwd(sessionName)
 	if cwd == "" {
-		return "", ""
+		return GitInfo{}
 	}
 	// Check if it's a git repo and get the toplevel
 	topCmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
 	topOut, err := topCmd.Output()
 	if err != nil {
-		return "", ""
+		return GitInfo{}
 	}
-	gitPath = strings.TrimSpace(string(topOut))
+	gitPath := strings.TrimSpace(string(topOut))
 
 	// Get current branch
+	var branch string
 	branchCmd := exec.Command("git", "-C", gitPath, "rev-parse", "--abbrev-ref", "HEAD")
 	branchOut, err := branchCmd.Output()
-	if err != nil {
-		return gitPath, ""
+	if err == nil {
+		branch = strings.TrimSpace(string(branchOut))
 	}
-	branch = strings.TrimSpace(string(branchOut))
-	return gitPath, branch
+
+	info := GitInfo{GitPath: gitPath, Branch: branch}
+
+	// Detect worktree: compare --git-dir vs --git-common-dir.
+	// In a worktree they differ; in the main checkout they are the same.
+	gitDirCmd := exec.Command("git", "-C", cwd, "rev-parse", "--git-dir")
+	commonDirCmd := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir")
+	gitDirOut, err1 := gitDirCmd.Output()
+	commonDirOut, err2 := commonDirCmd.Output()
+	if err1 == nil && err2 == nil {
+		gitDir := strings.TrimSpace(string(gitDirOut))
+		commonDir := strings.TrimSpace(string(commonDirOut))
+		// Resolve to absolute paths for reliable comparison
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(cwd, gitDir)
+		}
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(cwd, commonDir)
+		}
+		gitDir = filepath.Clean(gitDir)
+		commonDir = filepath.Clean(commonDir)
+		if gitDir != commonDir {
+			info.IsWorktree = true
+			info.WorktreePath = gitPath // toplevel of the worktree
+			// The main repo is the parent of the common dir (.git)
+			info.GitPath = filepath.Dir(commonDir)
+		}
+	}
+
+	return info
 }
 
 // KillSession kills a tmux session by name and optionally cleans up an associated git worktree.
-func KillSession(name string, cleanupWorktree bool, worktreePath, branch string) error {
+// gitPath is the main repo path used with -C so git commands run in the correct repo.
+func KillSession(name string, cleanupWorktree bool, worktreePath, branch, gitPath string) error {
 	if err := tmuxpkg.KillSession(name); err != nil {
 		return fmt.Errorf("kill session %q: %w", name, err)
 	}
 
 	if cleanupWorktree && worktreePath != "" {
-		// Remove the git worktree
-		rmCmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
+		repoFlag := gitPath
+		if repoFlag == "" {
+			repoFlag = worktreePath // fallback if no main repo path
+		}
+		// Try git worktree remove first
+		rmCmd := exec.Command("git", "-C", repoFlag, "worktree", "remove", worktreePath, "--force")
 		if err := rmCmd.Run(); err != nil {
-			return fmt.Errorf("remove worktree %q: %w", worktreePath, err)
+			// Fallback: remove directory manually then prune
+			os.RemoveAll(worktreePath)
+			pruneCmd := exec.Command("git", "-C", repoFlag, "worktree", "prune")
+			_ = pruneCmd.Run()
 		}
 		// Delete the branch if provided
 		if branch != "" {
-			branchCmd := exec.Command("git", "branch", "-D", branch)
+			branchCmd := exec.Command("git", "-C", repoFlag, "branch", "-D", branch)
 			_ = branchCmd.Run() // best-effort: branch may already be gone
 		}
+		// Clean up empty parent directories
+		CleanupEmptyParents(filepath.Dir(worktreePath))
 	}
 	return nil
+}
+
+// CleanupEmptyParents walks up from dir removing empty directories.
+// Stops at the user's home directory to avoid removing too much.
+func CleanupEmptyParents(dir string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	for {
+		dir = filepath.Clean(dir)
+		// Stop at home dir or root
+		if dir == homeDir || dir == "/" || dir == "." {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) > 0 {
+			return // not empty or can't read — stop
+		}
+		if err := os.Remove(dir); err != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // CreateSession creates a new tmux session with a two-pane layout.

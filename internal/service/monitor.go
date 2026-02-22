@@ -138,11 +138,13 @@ func (m *Monitor) poll() {
 			s.PrevContent = primaryContent
 			s.Status = InferStatus(prev.PrevContent, primaryContent, s.LastChanged, now, m.errorPatterns, m.promptPattern)
 		} else {
-			gitPath, branch := DetectSessionGitInfo(name)
-			if gitPath != "" {
+			info := DetectSessionGitInfoFull(name)
+			if info.GitPath != "" {
 				s.IsGitRepo = true
-				s.GitPath = gitPath
-				s.Branch = branch
+				s.GitPath = info.GitPath
+				s.Branch = info.Branch
+				s.IsWorktree = info.IsWorktree
+				s.WorktreePath = info.WorktreePath
 			}
 			s.PrevContent = primaryContent
 			s.Status = "active"
