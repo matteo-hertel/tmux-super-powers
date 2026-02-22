@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -158,5 +159,52 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 	}
 	if len(loaded.Directories) != len(original.Directories) {
 		t.Errorf("Directories length = %d, want %d", len(loaded.Directories), len(original.Directories))
+	}
+}
+
+func TestConfigPath_PrefersTspDir(t *testing.T) {
+	path := ConfigPath()
+	if !strings.HasSuffix(path, filepath.Join(".tsp", "config.yaml")) {
+		t.Errorf("ConfigPath() = %q, want suffix .tsp/config.yaml", path)
+	}
+}
+
+func TestLoad_MigratesOldConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldPath := filepath.Join(tmpDir, ".tmux-super-powers.yaml")
+	content := []byte("directories:\n  - /tmp/migrated\neditor: nano\n")
+	if err := os.WriteFile(oldPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, newPath, err := LoadWithMigration(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWithMigration() error = %v", err)
+	}
+	expectedNew := filepath.Join(tmpDir, ".tsp", "config.yaml")
+	if newPath != expectedNew {
+		t.Errorf("new path = %q, want %q", newPath, expectedNew)
+	}
+	if len(cfg.Directories) != 1 || cfg.Directories[0] != "/tmp/migrated" {
+		t.Errorf("config not migrated correctly: %+v", cfg)
+	}
+	if _, err := os.Stat(expectedNew); os.IsNotExist(err) {
+		t.Error("new config file was not created")
+	}
+}
+
+func TestLoad_NewPathTakesPriority(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldPath := filepath.Join(tmpDir, ".tmux-super-powers.yaml")
+	os.WriteFile(oldPath, []byte("editor: old\n"), 0644)
+	newDir := filepath.Join(tmpDir, ".tsp")
+	os.MkdirAll(newDir, 0755)
+	newPath := filepath.Join(newDir, "config.yaml")
+	os.WriteFile(newPath, []byte("editor: new\n"), 0644)
+	cfg, _, err := LoadWithMigration(tmpDir)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if cfg.Editor != "new" {
+		t.Errorf("Editor = %q, want \"new\"", cfg.Editor)
 	}
 }
