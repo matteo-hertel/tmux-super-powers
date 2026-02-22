@@ -329,6 +329,24 @@
   </div>
 </main>
 
+<!-- Pairing screen (shown when no token) -->
+<div id="pairingScreen" style="display:none;">
+  <div style="display:flex;align-items:center;justify-content:center;min-height:calc(100vh - 60px);padding:24px;">
+    <div class="form-panel" style="text-align:center;max-width:400px;">
+      <h3 style="margin-bottom:8px;">Device Pairing</h3>
+      <p style="color:var(--text-muted);font-size:14px;margin-bottom:24px;">
+        Run <code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:13px;">tsp device pair</code> in your terminal, then enter the 6-character code below.
+      </p>
+      <div class="form-group">
+        <input type="text" id="pairingCode" placeholder="A7K2M9" maxlength="6"
+          style="text-align:center;font-size:24px;letter-spacing:6px;text-transform:uppercase;font-weight:600;">
+      </div>
+      <button class="btn primary" id="btnPair" style="width:100%;padding:10px;">Pair Device</button>
+      <p id="pairingError" style="color:var(--red);font-size:13px;margin-top:12px;display:none;"></p>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toasts"></div>
 
 <script>
@@ -342,6 +360,7 @@
   var configDirs = [];
   var renderPending = false;
   var API = window.location.origin;
+  var authToken = localStorage.getItem("tsp_token") || "";
 
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
@@ -362,15 +381,79 @@
 
   async function api(method, path, body) {
     var opts = { method: method, headers: {} };
+    if (authToken) {
+      opts.headers["Authorization"] = "Bearer " + authToken;
+    }
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
     var resp = await fetch(API + path, opts);
     var data = await resp.json();
+    if (resp.status === 401) {
+      // Token invalid or revoked — show pairing screen
+      localStorage.removeItem("tsp_token");
+      authToken = "";
+      showPairingScreen();
+      throw new Error("Authentication required");
+    }
     if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
     return data;
   }
+
+  // ------ Pairing ------
+  function showPairingScreen() {
+    $("#pairingScreen").style.display = "block";
+    $("header").style.display = "none";
+    $("main").style.display = "none";
+    if (ws) { ws.close(); ws = null; }
+  }
+
+  function showDashboard() {
+    $("#pairingScreen").style.display = "none";
+    $("header").style.display = "";
+    $("main").style.display = "";
+    fetchHealth();
+    loadDirectories();
+    connectWS();
+  }
+
+  $("#btnPair").addEventListener("click", async function() {
+    var code = $("#pairingCode").value.trim().toUpperCase();
+    if (code.length !== 6) {
+      $("#pairingError").textContent = "Enter the 6-character code";
+      $("#pairingError").style.display = "block";
+      return;
+    }
+    $("#btnPair").disabled = true;
+    $("#btnPair").textContent = "Pairing...";
+    $("#pairingError").style.display = "none";
+    try {
+      var resp = await fetch(API + "/api/pair/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code, name: "Web Browser" })
+      });
+      var data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || "Pairing failed");
+      }
+      authToken = data.token;
+      localStorage.setItem("tsp_token", authToken);
+      showDashboard();
+    } catch(e) {
+      $("#pairingError").textContent = e.message;
+      $("#pairingError").style.display = "block";
+    } finally {
+      $("#btnPair").disabled = false;
+      $("#btnPair").textContent = "Pair Device";
+    }
+  });
+
+  // Allow Enter key on the code input
+  $("#pairingCode").addEventListener("keydown", function(e) {
+    if (e.key === "Enter") { $("#btnPair").click(); }
+  });
 
   function timeAgo(iso) {
     if (!iso) return "";
@@ -428,7 +511,12 @@
     });
   }
 
-  loadDirectories();
+  // ------ Init: check auth ------
+  if (authToken) {
+    showDashboard();
+  } else {
+    showPairingScreen();
+  }
 
   // ------ Health ------
   async function fetchHealth() {
@@ -441,13 +529,13 @@
       $("#healthGh").className = "health-dot fail";
     }
   }
-  fetchHealth();
-  setInterval(fetchHealth, 15000);
+  setInterval(function() { if (authToken) fetchHealth(); }, 15000);
 
   // ------ WebSocket ------
   function connectWS() {
+    if (!authToken) return;
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(proto + "//" + location.host + "/api/ws");
+    ws = new WebSocket(proto + "//" + location.host + "/api/ws?token=" + encodeURIComponent(authToken));
     ws.onopen = function() {
       $("#wsDot").className = "ws-dot connected";
       $("#wsLabel").textContent = "live";
@@ -476,7 +564,6 @@
     };
     ws.onerror = function() { ws.close(); };
   }
-  connectWS();
 
   // Flush pending render when user stops interacting
   document.addEventListener("focusout", function() {
