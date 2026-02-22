@@ -67,6 +67,10 @@ func (m *Middleware) Wrap(next http.Handler) http.Handler {
 
 // isOpenPath returns true for paths that do not require authentication.
 func isOpenPath(r *http.Request) bool {
+	// Non-API paths (web UI) are always open — auth happens client-side.
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		return true
+	}
 	switch r.URL.Path {
 	case "/api/health":
 		return true
