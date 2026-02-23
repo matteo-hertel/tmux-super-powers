@@ -82,4 +82,5 @@ func init() {
 	serveCmd.Flags().String("bind", "", "Address to bind to (default: Tailscale IP or 127.0.0.1)")
 	serveCmd.Flags().Bool("install", false, "Install as launchd service")
 	serveCmd.Flags().Bool("uninstall", false, "Remove launchd service")
+	serveCmd.AddCommand(serveStatusCmd)
 }

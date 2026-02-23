@@ -61,6 +61,7 @@ Examples:
 
 func init() {
 	devicePairCmd.Flags().String("name", "", "Name for the device being paired")
+	devicePairCmd.Flags().String("address", "", "Override server address in QR code (e.g. my-machine.tail1234.ts.net)")
 	deviceCmd.AddCommand(devicePairCmd)
 	deviceCmd.AddCommand(deviceListCmd)
 	deviceCmd.AddCommand(deviceRevokeCmd)
@@ -132,15 +133,22 @@ func runDevicePair(cmd *cobra.Command, args []string) {
 
 	code := initiateResp.Code
 	address := initiateResp.Address
-	if address == "" {
-		address = fmt.Sprintf("127.0.0.1:%d", port)
+
+	// --address flag overrides server-reported address
+	addrFlag, _ := cmd.Flags().GetString("address")
+	if addrFlag != "" {
+		address = normalizeAddress(addrFlag, port)
+	} else if address == "" {
+		address = fmt.Sprintf("http://127.0.0.1:%d", port)
+	} else if !strings.HasPrefix(address, "http") {
+		address = normalizeAddress(address, port)
 	}
 
-	// Build the QR URL
-	qrURL := fmt.Sprintf("http://%s/api/pair/complete?code=%s", address, code)
+	// Build JSON payload for QR code
+	qrPayload := fmt.Sprintf(`{"address":%q,"code":%q}`, address, code)
 
 	// Render QR code in terminal
-	qr, err := qrcode.New(qrURL, qrcode.Medium)
+	qr, err := qrcode.New(qrPayload, qrcode.Medium)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating QR code: %v\n", err)
 		os.Exit(1)
@@ -151,7 +159,8 @@ func runDevicePair(cmd *cobra.Command, args []string) {
 	fmt.Println()
 	fmt.Print(qr.ToSmallString(false))
 	fmt.Println()
-	fmt.Printf("Or enter this code manually: %s\n", code)
+	fmt.Printf("Server:  %s\n", address)
+	fmt.Printf("Code:    %s\n", code)
 	fmt.Println()
 	fmt.Println("Waiting for device to pair...")
 
