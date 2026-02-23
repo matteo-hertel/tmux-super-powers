@@ -33,6 +33,8 @@ type Server struct {
 	pairing        *device.PairingManager
 	adminToken     string
 	authMiddleware *auth.Middleware
+	bindAddr       string
+	port           int
 }
 
 // New creates a new API server.
@@ -66,6 +68,8 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 
 // Start starts the monitor and HTTP server.
 func (s *Server) Start(bind string, port int) error {
+	s.bindAddr = bind
+	s.port = port
 	s.monitor.Start()
 
 	mux := http.NewServeMux()

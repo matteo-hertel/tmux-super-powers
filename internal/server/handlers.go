@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -313,9 +314,15 @@ func (s *Server) handlePairInitiate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Return an externally reachable address for the QR code.
+	// Prefer Tailscale IP over the bind address (which may be 127.0.0.1).
+	externalAddr := s.bindAddr
+	if tsIP := DetectTailscaleIP(); tsIP != "" {
+		externalAddr = tsIP
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"code":    code,
-		"address": r.Host,
+		"address": fmt.Sprintf("http://%s:%d", externalAddr, s.port),
 	})
 }
 

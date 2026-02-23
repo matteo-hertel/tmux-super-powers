@@ -13,6 +13,7 @@ import (
 
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
+	"github.com/matteo-hertel/tmux-super-powers/internal/server"
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
 )
@@ -95,22 +96,31 @@ func runDevicePair(cmd *cobra.Command, args []string) {
 	}
 	port := cfg.Serve.Port
 
-	// Initiate pairing
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	initiateURL := baseURL + "/api/pair/initiate"
+	// Try localhost first, then Tailscale IP (same logic as serve status)
+	addresses := []string{"127.0.0.1"}
+	if tsIP := server.DetectTailscaleIP(); tsIP != "" {
+		addresses = append(addresses, tsIP)
+	}
 
 	body := fmt.Sprintf(`{"name":%q}`, name)
-	req, err := http.NewRequest("POST", initiateURL, strings.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-		os.Exit(1)
+	var baseURL string
+	var resp *http.Response
+	for _, addr := range addresses {
+		baseURL = fmt.Sprintf("http://%s:%d", addr, port)
+		initiateURL := baseURL + "/api/pair/initiate"
+		req, err := http.NewRequest("POST", initiateURL, strings.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		resp, err = (&http.Client{Timeout: 2 * time.Second}).Do(req)
+		if err == nil {
+			break
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+adminToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to server at %s: %v\n", initiateURL, err)
+	if resp == nil {
+		fmt.Fprintf(os.Stderr, "Error connecting to server on port %d\n", port)
 		fmt.Fprintln(os.Stderr, "Is the server running? Start it with: tsp serve")
 		os.Exit(1)
 	}
