@@ -4,133 +4,162 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-tmux-super-powers is a Go CLI tool that enhances tmux functionality using bubbletea for interactive TUIs. The project follows the Just-In-Time Development principle - building only what's needed when it's needed, avoiding speculative features.
+tmux-super-powers (`tsp`) is a Go CLI tool for managing tmux sessions, deploying parallel AI agents across git worktrees, and providing remote access via an HTTP/WebSocket API with device pairing. Built with bubbletea for interactive TUIs and cobra for CLI structure.
 
 ## Development Commands
 
-### Build
 ```bash
-go build -o tsp ./cmd/tsp
-```
-
-### Install
-```bash
-go install ./cmd/tsp
-```
-
-### Install from remote
-```bash
-go install github.com/matteo-hertel/tmux-super-powers/cmd/tsp@latest
-```
-
-### Dependencies
-```bash
-go mod tidy
-```
-
-### Test (add tests as needed)
-```bash
-go test ./...
+go build -o tsp ./cmd/tsp          # Build
+go install ./cmd/tsp               # Install locally
+go test ./...                      # Run tests
+go mod tidy                        # Clean dependencies
 ```
 
 ## Architecture
 
-### Command Structure
-The CLI uses cobra for command management with the following structure:
-- `tsp` (default) - Shows help/usage information
-- `tsp list` (alias: `txl`) - List and select tmux sessions
-- `tsp dir` - Directory selection (supports globs and ** for multi-level depth)
-- `tsp sandbox` - Sandbox project creation
-- `tsp project` - New project creation
-- `tsp config` - Configuration editing
-- `tsp wtx-new branch1 branch2 ...` - Create git worktrees with tmux sessions
-- `tsp wtx-here` - Create tmux session in current git repository
-- `tsp wtx-rm` - Interactive worktree removal with multi-select
-- `tsp dash` - Real-time session dashboard (mission control)
-- `tsp spawn` - Deploy multiple AI agents in parallel worktrees
-- `tsp harvest` - Review diffs, create PRs, fix CI, address review comments
-- `tsp new` - Create new project (consolidates sandbox + project)
-- `tsp rm` - Remove sessions with smart worktree detection
-- `tsp serve` - HTTP/WebSocket API server for mobile app access
+### Command Structure (`internal/cmd/`)
 
-### Key Components
+| Command | File | Purpose |
+|---------|------|---------|
+| `tsp list` (alias: `txl`) | `list.go` | Interactive session picker |
+| `tsp dir` | `dir.go` | Directory selection with glob support |
+| `tsp new` | `new.go` | Project creation (consolidates sandbox + project) |
+| `tsp sandbox` | `sandbox.go` | Sandbox project creation |
+| `tsp project` | `project.go` | Project creation |
+| `tsp config` | `config.go` | Open config in editor |
+| `tsp wtx-new` | `wtx_new.go` | Create git worktrees with tmux sessions |
+| `tsp wtx-here` | `wtx_here.go` | Create session in current repo |
+| `tsp wtx-rm` | `wtx_rm.go` | Interactive worktree removal |
+| `tsp spawn` | `spawn.go` | Deploy AI agents in parallel worktrees |
+| `tsp dash` | `dash.go` | Real-time session dashboard |
+| `tsp harvest` | `harvest.go` | Review diffs, PRs, CI, reviews |
+| `tsp rm` | `rm.go` | Session removal with worktree detection |
+| `tsp serve` | `serve.go` | HTTP/WebSocket API server |
+| `tsp serve status` | `serve_status.go` | Daemon health check |
+| `tsp device pair` | `device_pair.go` | QR-code device pairing |
+| `tsp device list` | `device_list.go` | List paired devices |
+| `tsp device revoke` | `device_revoke.go` | Revoke device access |
+| `tsp version` | `version.go` | Version info |
 
-**Main Entry Point**: `main.go` calls `cmd.Execute()`
+### Key Packages
 
-**Command Router**: `internal/cmd/root.go` defines the root command and registers all subcommands. The default behavior shows help/usage information.
+| Package | Purpose |
+|---------|---------|
+| `config/` | YAML config at `~/.tsp/config.yaml`, auto-migration from old path, defaults |
+| `internal/cmd/` | Cobra command definitions, TUI models |
+| `internal/tmux/` | Tmux operations (sessions, panes, send-keys, capture) |
+| `internal/service/` | Business logic (spawn, sessions, monitor, PR/CI, diff) |
+| `internal/server/` | HTTP handlers, WebSocket, embedded web UI |
+| `internal/auth/` | Token middleware, admin token management |
+| `internal/device/` | Device store, pairing flow, token generation |
+| `internal/pathutil/` | Tilde expansion, path helpers |
 
-**Configuration System**: `config/config.go` handles YAML configuration stored at `~/.tmux-super-powers.yaml`. The config automatically creates defaults if the file doesn't exist and falls back to environment variables (like `$EDITOR`).
+### API Endpoints (`internal/server/`)
 
-**Interactive TUI Pattern**: Each command that requires user interaction follows the same bubbletea pattern:
-1. Create a model struct with the necessary state
-2. Implement `Init()`, `Update()`, and `View()` methods
-3. Use appropriate bubbles components (list, textinput)
-4. Handle tea.KeyMsg for navigation and selection
+Routes registered in `server.go`, handlers in `handlers.go`:
 
-### Tmux Integration
-- **Session Management**: Uses `switch-client` when inside tmux, `attach-session` when outside
-- **Directory Command**: Creates new tmux sessions with a two-pane layout (nvim on left, terminal on right) similar to the `twosplit` function
-- **Git Worktree Commands**: Create sessions with neovim (left) and claude (right) panes
-- **Session Detection**: Checks `$TMUX` environment variable to determine if running inside tmux
-- **Session Creation**: Uses `has-session` to check if session exists before creating
-- **Session Naming**: Git worktree sessions use `{repo-name}-{branch}` format
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/health` | System health (tmux, gh) |
+| GET | `/api/config` | Current configuration |
+| GET | `/api/directories` | Resolved directory list |
+| GET | `/api/sessions` | List all sessions with live data |
+| GET | `/api/sessions/{name}` | Session detail with PR/diff |
+| POST | `/api/sessions` | Create session (name, dir, leftCmd, rightCmd) |
+| DELETE | `/api/sessions/{name}` | Delete session (optional worktree cleanup) |
+| POST | `/api/sessions/{name}/send` | Send text to pane |
+| POST | `/api/spawn` | Deploy agents (tasks, base, dir) |
+| GET | `/api/sessions/{name}/pr` | Get PR info |
+| POST | `/api/sessions/{name}/pr` | Create PR |
+| POST | `/api/sessions/{name}/fix-ci` | Fetch failing CI logs, send to agent |
+| POST | `/api/sessions/{name}/fix-reviews` | Fetch review comments, send to agent |
+| POST | `/api/sessions/{name}/merge` | Merge PR |
+| POST | `/api/pair/initiate` | Start pairing (returns 6-char code) |
+| POST | `/api/pair/complete` | Complete pairing (returns token) |
+| GET | `/api/pair/status` | Poll pairing status |
+| GET | `/api/ws` | WebSocket for real-time session streaming |
 
-### Path Handling
-The application handles tilde expansion (`~/`) in configuration paths and uses `filepath.Join()` for cross-platform compatibility.
+Auth: Bearer token in `Authorization` header or `?token=` query param for WebSocket. Pairing endpoints are unauthenticated.
 
-## Configuration Format
+### Spawn Flow
 
-User configuration is stored in `~/.tmux-super-powers.yaml`:
+1. Resolves git repo root and base branch
+2. For each task: creates branch (`spawn/{task-slug}-{suffix}`), worktree, installs deps
+3. Creates two-pane tmux session (nvim left, agent right)
+4. Task passed as CLI argument to agent command — no send-keys needed
+
+### Session Monitoring (`internal/service/monitor.go`)
+
+- Polls tmux sessions and captures pane content
+- Infers status: **active** (content changing), **idle** (no changes), **done** (prompt detected), **error** (error pattern matched)
+- Broadcasts updates to WebSocket subscribers
+- Configurable patterns in `dash` config section
+
+### Tmux Integration (`internal/tmux/`)
+
+- `SendKeys(target, text)` — chunked `send-keys -l` with newline collapsing, then Enter
+- `CreateTwoPaneSession(name, dir, leftCmd, rightCmd)` — session + horizontal split
+- `AttachOrSwitch(name)` — `switch-client` inside tmux, `attach-session` outside
+- Session naming: `{repo-name}-{branch}` with `.` and `:` replaced by `-`
+
+### Device Pairing (`internal/device/`, `internal/auth/`)
+
+- 6-character pairing codes (charset of 30, 5-minute expiry)
+- Tokens generated with `crypto/rand`, stored in `~/.tsp/devices.json` (mode 0600)
+- Admin token in `~/.tsp/admin-token` (mode 0600)
+- QR codes via `skip2/go-qrcode`
+
+### Embedded Web UI (`internal/server/web/index.html`)
+
+Single-page vanilla JS app with tabs: Sessions (live monitoring), Create (new sessions), Spawn (deploy agents). Includes pairing screen, WebSocket real-time updates, and full session management actions.
+
+## Configuration
+
+Stored at `~/.tsp/config.yaml` (auto-created, migrated from `~/.tmux-super-powers.yaml`):
 
 ```yaml
 directories:
   - ~/projects
-  - ~/work
-  - ~/personal
-  - ~/code/sandbox/*  # Glob patterns supported
-  - ~/deep-dirs/**   # Multi-level depth with **
+  - ~/work/**                    # ** for multi-level glob
+
+ignore_directories:
+  - node_modules
 
 sandbox:
   path: ~/sandbox
 
 projects:
   path: ~/projects
-  
-editor: $EDITOR  # Falls back to vim if not set
-```
 
-### Directory Configuration
-- Supports glob patterns with `*` to match multiple directories (one level deep)
-- Supports `**` for multi-level directory traversal (up to 2 levels deep)
-- Mixed static paths, single-level globs (`*`), and multi-level globs (`**`) are supported
+editor: $EDITOR
+
+dash:
+  refresh_ms: 500
+  error_patterns: [FAIL, panic:, Error:]
+  prompt_pattern: '\$\s*$'
+
+spawn:
+  worktree_base: ~/work/code
+  agent_command: claude --dangerously-skip-permissions
+
+serve:
+  port: 7777
+  bind: ""                       # Auto-detects Tailscale IP
+  refresh_ms: 500
+```
 
 ## Development Principles
 
-- **Just-In-Time Development**: Add features only when needed, avoid speculative complexity
+- **Just-In-Time Development**: Build only what's needed, avoid speculative features
 - **Single Purpose Commands**: Each command does one thing well
-- **Consistent TUI Patterns**: All interactive elements use bubbletea consistently
-- **Minimal Dependencies**: Keep the dependency tree small and focused
+- **Consistent TUI Patterns**: All interactive elements use bubbletea
+- **Minimal Dependencies**: Keep the dependency tree small
 - **Fast Execution**: Commands should be responsive and quick to start
-
-### Parallel Agent Workflow
-1. `tsp spawn "task1" "task2" --dash` — deploy agents
-2. `tsp dash` — monitor in real-time
-3. `tsp harvest` — review diffs, create PRs, fix CI, merge
-4. `tsp rm` — clean up remaining sessions
-
-### API Server
-- `tsp serve` starts the API server on the Tailscale interface (port 7777 by default)
-- `tsp serve --install` installs as a launchd daemon (auto-start on login)
-- `tsp serve --uninstall` removes the launchd daemon
-- REST endpoints at `/api/sessions`, `/api/spawn`, `/api/sessions/{name}/pr`, etc.
-- WebSocket at `/api/ws` for real-time session streaming
-- Configuration via `serve` section in `~/.tmux-super-powers.yaml` (port, bind, refresh_ms)
 
 ## Key Dependencies
 
-- `github.com/charmbracelet/bubbletea` - TUI framework
-- `github.com/charmbracelet/bubbles` - Pre-built TUI components
-- `github.com/charmbracelet/lipgloss` - Terminal styling
-- `github.com/spf13/cobra` - CLI framework
-- `gopkg.in/yaml.v3` - YAML configuration parsing
-- `github.com/gorilla/websocket` - WebSocket support for API server
+- `charmbracelet/bubbletea` + `bubbles` + `lipgloss` — TUI framework and styling
+- `spf13/cobra` — CLI framework
+- `gorilla/websocket` — WebSocket support
+- `gopkg.in/yaml.v3` — Configuration parsing
+- `skip2/go-qrcode` — QR code generation for device pairing
