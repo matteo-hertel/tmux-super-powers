@@ -76,17 +76,26 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
-// BuildSendKeysArgs builds tmux send-keys args for sending literal text to a pane.
-func BuildSendKeysArgs(target, text string) []string {
-	return []string{"send-keys", "-t", target, "-l", text}
-}
-
 // SendKeys sends literal text to a tmux pane target and presses Enter.
-// Uses -l for literal text (prevents key name interpretation), then C-m for Enter.
+// Uses load-buffer/paste-buffer to reliably handle arbitrary text including
+// URLs, special characters, and long strings that send-keys -l can choke on.
 func SendKeys(target, text string) error {
-	if err := exec.Command("tmux", BuildSendKeysArgs(target, text)...).Run(); err != nil {
-		return err
+	// Load text into a named tmux buffer via stdin to avoid argument-parsing issues.
+	loadCmd := exec.Command("tmux", "load-buffer", "-b", "tsp-input", "-")
+	loadCmd.Stdin = strings.NewReader(text)
+	if err := loadCmd.Run(); err != nil {
+		return fmt.Errorf("load-buffer: %w", err)
 	}
+
+	// Paste the buffer into the target pane.
+	if err := exec.Command("tmux", "paste-buffer", "-b", "tsp-input", "-t", target).Run(); err != nil {
+		return fmt.Errorf("paste-buffer: %w", err)
+	}
+
+	// Clean up the buffer.
+	exec.Command("tmux", "delete-buffer", "-b", "tsp-input").Run()
+
+	// Press Enter.
 	return exec.Command("tmux", "send-keys", "-t", target, "C-m").Run()
 }
 

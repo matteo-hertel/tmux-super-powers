@@ -133,7 +133,12 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		time.Sleep(2 * time.Second)
 
 		target := fmt.Sprintf("%s:0.1", sessionName)
-		tmuxpkg.SendKeys(target, task)
+		if err := tmuxpkg.SendKeys(target, task); err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("failed to send task to pane: %v", err)
+			results = append(results, result)
+			continue
+		}
 
 		result.Status = "ok"
 		results = append(results, result)

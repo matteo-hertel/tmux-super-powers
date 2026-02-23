@@ -110,35 +110,9 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 	}
 }
 
-func TestBuildSendKeysArgs(t *testing.T) {
-	tests := []struct {
-		name   string
-		target string
-		text   string
-		want   []string
-	}{
-		{
-			name:   "simple text",
-			target: "myapp-fix:0.1",
-			text:   "fix the auth bug",
-			want:   []string{"send-keys", "-t", "myapp-fix:0.1", "-l", "fix the auth bug"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := BuildSendKeysArgs(tt.target, tt.text)
-			if len(got) != len(tt.want) {
-				t.Errorf("BuildSendKeysArgs() len = %d, want %d", len(got), len(tt.want))
-				return
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("BuildSendKeysArgs()[%d] = %q, want %q", i, got[i], tt.want[i])
-				}
-			}
-		})
-	}
-}
+// SendKeys is tested via integration (requires tmux).
+// The implementation uses load-buffer/paste-buffer to reliably handle
+// arbitrary text including URLs and special characters.
 
 func TestBuildListSessionsArgs(t *testing.T) {
 	args := BuildListSessionsArgs()

@@ -136,7 +136,7 @@ func (s *Store) loadLocked() {
 // write persists the current device list to the JSON file.
 func (s *Store) write() error {
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return errors.Join(errors.New("device store: create directory"), err)
 	}
 
@@ -146,7 +146,7 @@ func (s *Store) write() error {
 		return errors.Join(errors.New("device store: marshal"), err)
 	}
 
-	if err := os.WriteFile(s.path, data, 0644); err != nil {
+	if err := os.WriteFile(s.path, data, 0600); err != nil {
 		return errors.Join(errors.New("device store: write file"), err)
 	}
 	return nil
