@@ -77,26 +77,30 @@ func RunPopup(command string, width, height int, detach bool) error {
 }
 
 // SendKeys sends literal text to a tmux pane target and presses Enter.
-// Uses load-buffer/paste-buffer to reliably handle arbitrary text including
-// URLs, special characters, and long strings that send-keys -l can choke on.
+// Sends text in chunks via send-keys -l to avoid tmux argument-length
+// limits with long strings (e.g. URLs). Unlike paste-buffer this does
+// NOT trigger bracketed-paste mode, so the follow-up Enter is handled
+// normally by the receiving application.
 func SendKeys(target, text string) error {
-	// Load text into a named tmux buffer via stdin to avoid argument-parsing issues.
-	loadCmd := exec.Command("tmux", "load-buffer", "-b", "tsp-input", "-")
-	loadCmd.Stdin = strings.NewReader(text)
-	if err := loadCmd.Run(); err != nil {
-		return fmt.Errorf("load-buffer: %w", err)
+	// Collapse newlines to spaces so the input stays single-line and
+	// Enter submits rather than inserting a blank line.
+	text = strings.ReplaceAll(text, "\r\n", " ")
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+
+	const maxChunk = 200
+	for len(text) > 0 {
+		chunk := text
+		if len(chunk) > maxChunk {
+			chunk = text[:maxChunk]
+		}
+		text = text[len(chunk):]
+		if err := exec.Command("tmux", "send-keys", "-t", target, "-l", chunk).Run(); err != nil {
+			return fmt.Errorf("send-keys: %w", err)
+		}
 	}
-
-	// Paste the buffer into the target pane.
-	if err := exec.Command("tmux", "paste-buffer", "-b", "tsp-input", "-t", target).Run(); err != nil {
-		return fmt.Errorf("paste-buffer: %w", err)
-	}
-
-	// Clean up the buffer.
-	exec.Command("tmux", "delete-buffer", "-b", "tsp-input").Run()
-
 	// Press Enter.
-	return exec.Command("tmux", "send-keys", "-t", target, "C-m").Run()
+	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
 }
 
 // BuildListSessionsArgs builds tmux list-sessions args.

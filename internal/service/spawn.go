@@ -36,6 +36,11 @@ func memorableSuffix() string {
 	return adjectives[r.Intn(len(adjectives))] + "-" + nouns[r.Intn(len(nouns))]
 }
 
+// shellQuote wraps s in single quotes, escaping any embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // TaskToBranch converts a task description to a git branch name.
 func TaskToBranch(task string) string {
 	if task == "" {
@@ -127,18 +132,10 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentCmd)
-
-		// Wait for the agent command to start before sending the task prompt
-		time.Sleep(2 * time.Second)
-
-		target := fmt.Sprintf("%s:0.1", sessionName)
-		if err := tmuxpkg.SendKeys(target, task); err != nil {
-			result.Status = "error"
-			result.Error = fmt.Sprintf("failed to send task to pane: %v", err)
-			results = append(results, result)
-			continue
-		}
+		// Pass the task as a CLI argument to the agent command so it starts
+		// working immediately — avoids all send-keys/Enter issues.
+		agentWithTask := agentCmd + " " + shellQuote(task)
+		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentWithTask)
 
 		result.Status = "ok"
 		results = append(results, result)
