@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // SanitizeSessionName replaces tmux-problematic characters (. and :) with hyphens.
@@ -78,9 +79,10 @@ func RunPopup(command string, width, height int, detach bool) error {
 
 // SendKeys sends literal text to a tmux pane target and presses Enter.
 // Sends text in chunks via send-keys -l to avoid tmux argument-length
-// limits with long strings (e.g. URLs). Unlike paste-buffer this does
-// NOT trigger bracketed-paste mode, so the follow-up Enter is handled
-// normally by the receiving application.
+// limits with long strings (e.g. URLs). A short delay separates the
+// literal text from the Enter key to avoid a race condition — each
+// exec.Command spawns a separate tmux client and the server does not
+// guarantee ordering across clients.
 func SendKeys(target, text string) error {
 	// Collapse newlines to spaces so the input stays single-line and
 	// Enter submits rather than inserting a blank line.
@@ -99,6 +101,9 @@ func SendKeys(target, text string) error {
 			return fmt.Errorf("send-keys: %w", err)
 		}
 	}
+	// Brief delay so the tmux server finishes processing the literal
+	// text before we send Enter from a new client connection.
+	time.Sleep(50 * time.Millisecond)
 	// Press Enter.
 	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
 }
