@@ -27,6 +27,7 @@ var indexHTML []byte
 type Server struct {
 	cfg            *config.Config
 	monitor        *service.Monitor
+	notifier       *service.Notifier
 	upgrader       websocket.Upgrader
 	httpSrv        *http.Server
 	deviceStore    *device.Store
@@ -49,12 +50,13 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 	pairing := device.NewPairingManager(5 * time.Minute)
 	authMiddleware := auth.NewMiddleware(adminToken, deviceStore)
 
-	return &Server{
+	srv := &Server{
 		cfg: cfg,
 		monitor: service.NewMonitor(
 			cfg.Serve.RefreshMs,
 			cfg.Dash.ErrorPatterns,
 			cfg.Dash.PromptPattern,
+			cfg.Dash.InputPatterns,
 		),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
@@ -63,7 +65,9 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 		pairing:        pairing,
 		adminToken:     adminToken,
 		authMiddleware: authMiddleware,
-	}, nil
+	}
+	srv.notifier = service.NewNotifier(srv.monitor, srv.deviceStore)
+	return srv, nil
 }
 
 // Start starts the monitor and HTTP server.
@@ -71,6 +75,7 @@ func (s *Server) Start(bind string, port int) error {
 	s.bindAddr = bind
 	s.port = port
 	s.monitor.Start()
+	s.notifier.Start()
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
@@ -89,6 +94,7 @@ func (s *Server) Start(bind string, port int) error {
 
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() error {
+	s.notifier.Stop()
 	s.monitor.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -117,12 +123,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Spawn
 	mux.HandleFunc("POST /api/spawn", s.handleSpawn)
 
+	// Projects
+	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
+
 	// PR/CI
 	mux.HandleFunc("GET /api/sessions/{name}/pr", s.handleGetPR)
 	mux.HandleFunc("POST /api/sessions/{name}/pr", s.handleCreatePR)
 	mux.HandleFunc("POST /api/sessions/{name}/fix-ci", s.handleFixCI)
 	mux.HandleFunc("POST /api/sessions/{name}/fix-reviews", s.handleFixReviews)
 	mux.HandleFunc("POST /api/sessions/{name}/merge", s.handleMerge)
+
+	// Agent log
+	mux.HandleFunc("GET /api/sessions/{name}/agent-log", s.handleGetAgentLog)
+
+	// Device management
+	mux.HandleFunc("PUT /api/devices/push-token", s.handleRegisterPushToken)
 
 	// Pairing
 	mux.HandleFunc("POST /api/pair/initiate", s.handlePairInitiate)

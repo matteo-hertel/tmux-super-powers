@@ -69,7 +69,9 @@ Real-time monitoring of all sessions with live status inference (active/idle/don
 
 ```bash
 tsp serve                # Start HTTP/WebSocket server (auto-detects Tailscale IP)
-tsp serve --install      # Install as launchd daemon (auto-start on login)
+tsp serve start          # Start as background daemon (auto-start on login)
+tsp serve stop           # Stop the daemon
+tsp serve restart        # Restart the daemon
 tsp serve status         # Check daemon and server health
 ```
 

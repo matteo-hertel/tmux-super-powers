@@ -52,61 +52,78 @@ func logDir() string {
 	return dir
 }
 
-func installLaunchd() {
+// ensurePlist writes the launchd plist file if it doesn't already exist.
+// Returns the plist path and any error.
+func ensurePlist() (string, error) {
+	path := plistPath()
+	if _, err := os.Stat(path); err == nil {
+		return path, nil // already exists
+	}
+	return writePlist()
+}
+
+// writePlist always writes (or overwrites) the launchd plist file.
+// Returns the plist path and any error.
+func writePlist() (string, error) {
 	binary, err := exec.LookPath("tsp")
 	if err != nil {
-		// Fall back to current executable
 		binary, _ = os.Executable()
 	}
 
 	home, _ := os.UserHomeDir()
-	currentPath := os.Getenv("PATH")
 
 	data := struct {
-		Label  string
-		Binary string
-		LogDir string
-		Path   string
-		Home   string
+		Label, Binary, LogDir, Path, Home string
 	}{
 		Label:  plistLabel,
 		Binary: binary,
 		LogDir: logDir(),
-		Path:   currentPath,
+		Path:   os.Getenv("PATH"),
 		Home:   home,
 	}
 
 	path := plistPath()
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating plist: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("creating plist: %w", err)
 	}
 	defer f.Close()
 
 	if err := plistTemplate.Execute(f, data); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing plist: %v\n", err)
-		os.Exit(1)
+		os.Remove(path)
+		return "", fmt.Errorf("writing plist: %w", err)
 	}
 
-	if err := exec.Command("launchctl", "load", path).Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading service: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Installed and started %s\n", plistLabel)
-	fmt.Printf("Plist: %s\n", path)
-	fmt.Printf("Logs:  %s/serve.log\n", logDir())
+	return path, nil
 }
 
-func uninstallLaunchd() {
+// removePlist removes the launchd plist file.
+func removePlist() error {
 	path := plistPath()
-	exec.Command("launchctl", "unload", path).Run()
-
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error removing plist: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("removing plist: %w", err)
 	}
+	return nil
+}
 
-	fmt.Printf("Uninstalled %s\n", plistLabel)
+// isServiceLoaded checks whether the launchd service is currently loaded.
+func isServiceLoaded() bool {
+	return exec.Command("launchctl", "list", plistLabel).Run() == nil
+}
+
+// loadService loads the launchd plist via launchctl.
+func loadService(plistPath string) error {
+	if err := exec.Command("launchctl", "load", plistPath).Run(); err != nil {
+		return fmt.Errorf("launchctl load: %w", err)
+	}
+	return nil
+}
+
+// unloadService unloads the launchd plist via launchctl.
+func unloadService() error {
+	path := plistPath()
+	if err := exec.Command("launchctl", "unload", path).Run(); err != nil {
+		return fmt.Errorf("launchctl unload: %w", err)
+	}
+	return nil
 }

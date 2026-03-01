@@ -12,16 +12,18 @@ type Monitor struct {
 	refreshMs     int
 	errorPatterns []string
 	promptPattern string
+	inputPatterns []string
 	subscribers   []chan []Session
 	subMu         sync.Mutex
 	stopCh        chan struct{}
 }
 
-func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string) *Monitor {
+func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string, inputPatterns []string) *Monitor {
 	return &Monitor{
 		refreshMs:     refreshMs,
 		errorPatterns: errorPatterns,
 		promptPattern: promptPattern,
+		inputPatterns: inputPatterns,
 		stopCh:        make(chan struct{}),
 	}
 }
@@ -130,6 +132,7 @@ func (m *Monitor) poll() {
 			s.IsGitRepo = prev.IsGitRepo
 			s.GitPath = prev.GitPath
 			s.WorktreePath = prev.WorktreePath
+			s.Dir = prev.Dir
 			s.Diff = prev.Diff
 			s.PR = prev.PR
 			if primaryContent != prev.PrevContent {
@@ -139,6 +142,7 @@ func (m *Monitor) poll() {
 			s.Status = InferStatus(prev.PrevContent, primaryContent, s.LastChanged, now, m.errorPatterns, m.promptPattern)
 		} else {
 			info := DetectSessionGitInfoFull(name)
+			s.Dir = info.Cwd
 			if info.GitPath != "" {
 				s.IsGitRepo = true
 				s.GitPath = info.GitPath
@@ -152,6 +156,18 @@ func (m *Monitor) poll() {
 		for i := range s.Panes {
 			if s.Panes[i].Type != "editor" {
 				s.Panes[i].Status = s.Status
+			}
+		}
+		// Detect agent waiting for input (overrides idle/active).
+		if s.Status != "error" && s.Status != "done" {
+			if waiting, prompt := DetectWaiting(s.Panes, m.inputPatterns); waiting {
+				s.Status = "waiting"
+				for i := range s.Panes {
+					if s.Panes[i].Type == "agent" {
+						s.Panes[i].Status = "waiting"
+						s.Panes[i].Prompt = prompt
+					}
+				}
 			}
 		}
 		updated = append(updated, s)

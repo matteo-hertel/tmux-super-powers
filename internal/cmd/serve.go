@@ -26,21 +26,12 @@ Examples:
   tsp serve --bind 0.0.0.0  # Override bind address
 
 Daemon management:
-  tsp serve --install    # Install as launchd service (auto-start on login)
-  tsp serve --uninstall  # Remove launchd service`,
+  tsp serve start        # Start as background daemon (launchd)
+  tsp serve stop         # Stop the daemon
+  tsp serve restart      # Restart the daemon
+  tsp serve status       # Check daemon health
+  tsp serve uninstall    # Stop daemon and remove plist`,
 	Run: func(cmd *cobra.Command, args []string) {
-		install, _ := cmd.Flags().GetBool("install")
-		uninstall, _ := cmd.Flags().GetBool("uninstall")
-
-		if install {
-			installLaunchd()
-			return
-		}
-		if uninstall {
-			uninstallLaunchd()
-			return
-		}
-
 		port, _ := cmd.Flags().GetInt("port")
 		bind, _ := cmd.Flags().GetString("bind")
 
@@ -80,7 +71,9 @@ Daemon management:
 func init() {
 	serveCmd.Flags().IntP("port", "p", 0, "Port to listen on (default: from config or 7777)")
 	serveCmd.Flags().String("bind", "", "Address to bind to (default: Tailscale IP or 127.0.0.1)")
-	serveCmd.Flags().Bool("install", false, "Install as launchd service")
-	serveCmd.Flags().Bool("uninstall", false, "Remove launchd service")
 	serveCmd.AddCommand(serveStatusCmd)
+	serveCmd.AddCommand(serveStartCmd)
+	serveCmd.AddCommand(serveStopCmd)
+	serveCmd.AddCommand(serveRestartCmd)
+	serveCmd.AddCommand(serveUninstallCmd)
 }

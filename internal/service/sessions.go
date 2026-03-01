@@ -24,8 +24,9 @@ type Session struct {
 	Panes        []Pane    `json:"panes"`
 	Diff         *DiffStat `json:"diff,omitempty"`
 	PR           *PRInfo   `json:"pr,omitempty"`
-	PrevContent  string    `json:"-"`
-	WorktreePath string    `json:"-"`
+	PrevContent  string `json:"-"`
+	WorktreePath string `json:"worktreePath,omitempty"`
+	Dir          string `json:"dir,omitempty"`
 }
 
 // Pane represents a single pane within a tmux session.
@@ -35,6 +36,7 @@ type Pane struct {
 	Process string `json:"process"`
 	Status  string `json:"status,omitempty"`
 	Content string `json:"content,omitempty"`
+	Prompt  string `json:"prompt,omitempty"`
 }
 
 // DiffStat holds git diff statistics.
@@ -143,6 +145,7 @@ func CapturePaneContent(session string, pane int) string {
 
 // GitInfo holds git repository metadata for a session.
 type GitInfo struct {
+	Cwd          string // pane working directory
 	GitPath      string // toplevel of the main repo
 	Branch       string
 	IsWorktree   bool
@@ -167,7 +170,7 @@ func DetectSessionGitInfoFull(sessionName string) GitInfo {
 	topCmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
 	topOut, err := topCmd.Output()
 	if err != nil {
-		return GitInfo{}
+		return GitInfo{Cwd: cwd}
 	}
 	gitPath := strings.TrimSpace(string(topOut))
 
@@ -180,6 +183,7 @@ func DetectSessionGitInfoFull(sessionName string) GitInfo {
 	}
 
 	info := GitInfo{GitPath: gitPath, Branch: branch}
+	info.Cwd = cwd
 
 	// Detect worktree: compare --git-dir vs --git-common-dir.
 	// In a worktree they differ; in the main checkout they are the same.

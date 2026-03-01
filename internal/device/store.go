@@ -11,11 +11,12 @@ import (
 
 // Device represents a paired mobile device.
 type Device struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Token    string    `json:"token"`
-	PairedAt time.Time `json:"paired_at"`
-	LastSeen time.Time `json:"last_seen,omitempty"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Token     string    `json:"token"`
+	PushToken string    `json:"push_token,omitempty"`
+	PairedAt  time.Time `json:"paired_at"`
+	LastSeen  time.Time `json:"last_seen,omitempty"`
 }
 
 // storeFile is the on-disk JSON format.
@@ -106,6 +107,37 @@ func (s *Store) UpdateLastSeen(token string, t time.Time) {
 			return
 		}
 	}
+}
+
+// UpdatePushToken sets the Expo push token for the device matching the
+// given auth token and persists to disk.
+func (s *Store) UpdatePushToken(authToken, pushToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.loadLocked()
+	for i := range s.devices {
+		if s.devices[i].Token == authToken {
+			s.devices[i].PushToken = pushToken
+			return s.write()
+		}
+	}
+	return nil
+}
+
+// PushTokens returns all non-empty push tokens from paired devices.
+func (s *Store) PushTokens() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.loadLocked()
+	var tokens []string
+	for _, d := range s.devices {
+		if d.PushToken != "" {
+			tokens = append(tokens, d.PushToken)
+		}
+	}
+	return tokens
 }
 
 // load reads the JSON file into memory (acquires lock).

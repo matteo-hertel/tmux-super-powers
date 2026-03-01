@@ -3,7 +3,7 @@ package service
 import "testing"
 
 func TestNewMonitor(t *testing.T) {
-	m := NewMonitor(500, []string{"FAIL"}, `\$\s*$`)
+	m := NewMonitor(500, []string{"FAIL"}, `\$\s*$`, nil)
 	if m == nil {
 		t.Fatal("expected non-nil monitor")
 	}
@@ -13,7 +13,7 @@ func TestNewMonitor(t *testing.T) {
 }
 
 func TestMonitorSnapshot(t *testing.T) {
-	m := NewMonitor(500, []string{"FAIL"}, `\$\s*$`)
+	m := NewMonitor(500, []string{"FAIL"}, `\$\s*$`, nil)
 	sessions := m.Snapshot()
 	if len(sessions) != 0 {
 		t.Errorf("expected empty snapshot, got %d sessions", len(sessions))
@@ -21,7 +21,7 @@ func TestMonitorSnapshot(t *testing.T) {
 }
 
 func TestMonitorFindSessionEmpty(t *testing.T) {
-	m := NewMonitor(500, nil, "")
+	m := NewMonitor(500, nil, "", nil)
 	s := m.FindSession("nonexistent")
 	if s != nil {
 		t.Error("expected nil for nonexistent session")
@@ -29,7 +29,7 @@ func TestMonitorFindSessionEmpty(t *testing.T) {
 }
 
 func TestMonitorSubscribeUnsubscribe(t *testing.T) {
-	m := NewMonitor(500, nil, "")
+	m := NewMonitor(500, nil, "", nil)
 	ch := m.Subscribe()
 	if ch == nil {
 		t.Fatal("expected non-nil channel")

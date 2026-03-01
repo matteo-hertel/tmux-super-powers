@@ -4,9 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/matteo-hertel/tmux-super-powers/internal/agentlog"
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 )
@@ -375,6 +380,34 @@ func (s *Server) handlePairStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleRegisterPushToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PushToken string `json:"push_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.PushToken == "" {
+		writeError(w, http.StatusBadRequest, "push_token is required")
+		return
+	}
+
+	token := r.Header.Get("Authorization")
+	if strings.HasPrefix(token, "Bearer ") {
+		token = strings.TrimPrefix(token, "Bearer ")
+	} else {
+		token = r.URL.Query().Get("token")
+	}
+
+	if err := s.deviceStore.UpdatePushToken(token, req.PushToken); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save push token")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "registered"})
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -419,4 +452,114 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+		Type string `json:"type"` // "project" or "sandbox"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if req.Type != "project" && req.Type != "sandbox" {
+		writeError(w, http.StatusBadRequest, "type must be 'project' or 'sandbox'")
+		return
+	}
+
+	// Resolve base path from config
+	var basePath string
+	if req.Type == "sandbox" {
+		basePath = s.cfg.Sandbox.Path
+	} else {
+		basePath = s.cfg.Projects.Path
+	}
+	if basePath == "" {
+		homeDir, _ := os.UserHomeDir()
+		if req.Type == "sandbox" {
+			basePath = filepath.Join(homeDir, "sandbox")
+		} else {
+			basePath = filepath.Join(homeDir, "projects")
+		}
+	}
+	// Expand ~ prefix
+	if strings.HasPrefix(basePath, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		basePath = filepath.Join(homeDir, basePath[2:])
+	}
+
+	dirPath := filepath.Join(basePath, req.Name)
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create directory: %v", err))
+		return
+	}
+
+	// Sanitize session name
+	sessionName := fmt.Sprintf("%s-%s", req.Type, req.Name)
+	sessionName = strings.ReplaceAll(sessionName, ".", "-")
+	sessionName = strings.ReplaceAll(sessionName, ":", "-")
+
+	if err := service.CreateSession(sessionName, dirPath, s.cfg.Editor, ""); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"status":  "created",
+		"session": sessionName,
+		"path":    dirPath,
+	})
+}
+
+func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
+	name := ParseSessionName(r)
+	session := s.monitor.FindSession(name)
+	if session == nil {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	// Determine session directory for JSONL discovery
+	dir := session.Dir
+	if session.WorktreePath != "" {
+		dir = session.WorktreePath
+	}
+	if dir == "" {
+		writeError(w, http.StatusNotFound, "session directory unknown")
+		return
+	}
+
+	// Find JSONL file
+	jsonlPath, err := agentlog.FindJSONL(dir)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no agent log found")
+		return
+	}
+
+	// Parse offset param
+	var offset int64
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		offset, _ = strconv.ParseInt(offsetStr, 10, 64)
+	}
+
+	// Read and parse
+	entries, newOffset, err := agentlog.ReadEntriesFrom(jsonlPath, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	chunks := agentlog.Parse(entries)
+	ongoing := agentlog.IsOngoing(jsonlPath)
+
+	writeJSON(w, http.StatusOK, agentlog.AgentLogResponse{
+		Chunks:     chunks,
+		Ongoing:    ongoing,
+		ByteOffset: newOffset,
+	})
 }

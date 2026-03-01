@@ -40,6 +40,37 @@ func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns
 	return "active"
 }
 
+// DetectWaiting checks agent panes for input prompt patterns.
+// Returns true and the detected prompt text if an agent is waiting for input.
+func DetectWaiting(panes []Pane, inputPatterns []string) (bool, string) {
+	for _, pane := range panes {
+		if pane.Type != "agent" || pane.Content == "" {
+			continue
+		}
+		lines := strings.Split(strings.TrimRight(pane.Content, "\n"), "\n")
+		check := lines
+		if len(check) > 5 {
+			check = check[len(check)-5:]
+		}
+		for _, pattern := range inputPatterns {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				continue
+			}
+			for _, line := range check {
+				if re.MatchString(line) {
+					prompt := lines
+					if len(prompt) > 3 {
+						prompt = prompt[len(prompt)-3:]
+					}
+					return true, strings.Join(prompt, "\n")
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
 // StatusIcon returns a Unicode icon for a status string.
 func StatusIcon(status string) string {
 	switch status {
@@ -51,6 +82,8 @@ func StatusIcon(status string) string {
 		return "\u2713"
 	case "error":
 		return "\u2717"
+	case "waiting":
+		return "?"
 	default:
 		return "?"
 	}

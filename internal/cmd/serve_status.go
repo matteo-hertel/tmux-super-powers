@@ -34,7 +34,7 @@ func runServeStatus(cmd *cobra.Command, args []string) {
 	// 1. Check plist exists
 	path := plistPath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Println("  Daemon installed:  no (run `tsp serve --install`)")
+		fmt.Println("  Daemon installed:  no (run `tsp serve start`)")
 		fmt.Println("  Process running:   -")
 		fmt.Println("  Server responding: -")
 		return

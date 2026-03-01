@@ -24,6 +24,7 @@ type DashConfig struct {
 	RefreshMs     int      `yaml:"refresh_ms"`
 	ErrorPatterns []string `yaml:"error_patterns"`
 	PromptPattern string   `yaml:"prompt_pattern"`
+	InputPatterns []string `yaml:"input_patterns"`
 }
 
 type SpawnConfig struct {
@@ -138,6 +139,15 @@ func LoadFrom(configPath string) (*Config, error) {
 	if len(cfg.Dash.ErrorPatterns) == 0 {
 		cfg.Dash.ErrorPatterns = []string{"FAIL", "panic:", "Error:"}
 	}
+	if len(cfg.Dash.InputPatterns) == 0 {
+		cfg.Dash.InputPatterns = []string{
+			`^\? `,
+			`\(y/n\)`,
+			`\(Y/n\)`,
+			`Do you want to`,
+			`Press Enter`,
+		}
+	}
 
 	// Spawn defaults
 	homeDir, _ := os.UserHomeDir()
@@ -196,6 +206,13 @@ func defaultConfig() *Config {
 			RefreshMs:     500,
 			ErrorPatterns: []string{"FAIL", "panic:", "Error:"},
 			PromptPattern: `\$\s*$`,
+			InputPatterns: []string{
+				`^\? `,
+				`\(y/n\)`,
+				`\(Y/n\)`,
+				`Do you want to`,
+				`Press Enter`,
+			},
 		},
 		Spawn: SpawnConfig{
 			WorktreeBase: filepath.Join(homeDir, "work", "code"),
