@@ -345,9 +345,13 @@ func (s *Server) handlePairComplete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	name := req.Name
+	// Prefer the name from CLI (tsp device pair --name) over the app's generic name.
+	name := deviceName
 	if name == "" {
-		name = deviceName
+		name = req.Name
+	}
+	if name == "" {
+		name = "unnamed device"
 	}
 	token := device.GenerateToken()
 	id := device.GenerateDeviceID()
@@ -406,6 +410,60 @@ func (s *Server) handleRegisterPushToken(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "registered"})
+}
+
+func (s *Server) handleTestPush(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title    string `json:"title"`
+		Body     string `json:"body"`
+		Category string `json:"category"` // "waiting", "done", "error"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		req.Title = "Test notification"
+		req.Body = "Push notifications are working!"
+		req.Category = "done"
+	}
+	if req.Title == "" {
+		req.Title = "Test notification"
+	}
+	if req.Body == "" {
+		req.Body = "Push notifications are working!"
+	}
+	if req.Category == "" {
+		req.Category = "done"
+	}
+
+	tokens := s.deviceStore.PushTokens()
+	if len(tokens) == 0 {
+		writeError(w, http.StatusBadRequest, "no push tokens registered — open the app first")
+		return
+	}
+
+	push := service.NewPushClient()
+	var messages []service.PushMessage
+	for _, token := range tokens {
+		messages = append(messages, service.PushMessage{
+			To:         token,
+			Title:      req.Title,
+			Body:       req.Body,
+			Sound:      "default",
+			Priority:   "high",
+			CategoryID: req.Category,
+			Data: map[string]string{
+				"type": "test",
+			},
+		})
+	}
+
+	if err := push.Send(messages); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("push failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "sent",
+		"recipients": len(tokens),
+	})
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -534,11 +592,29 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find JSONL file
-	jsonlPath, err := agentlog.FindJSONL(dir)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "no agent log found")
-		return
+	// List all available agent sessions
+	allSessions, _ := agentlog.FindAllJSONL(dir)
+
+	// Pick JSONL file: ?session=<id> or default to best match
+	var jsonlPath string
+	if sessionID := r.URL.Query().Get("session"); sessionID != "" {
+		for _, as := range allSessions {
+			if as.ID == sessionID {
+				jsonlPath = as.Path
+				break
+			}
+		}
+		if jsonlPath == "" {
+			writeError(w, http.StatusNotFound, "agent session not found")
+			return
+		}
+	} else {
+		var err error
+		jsonlPath, err = agentlog.FindJSONL(dir)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "no agent log found")
+			return
+		}
 	}
 
 	// Parse offset param
@@ -561,5 +637,6 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 		Chunks:     chunks,
 		Ongoing:    ongoing,
 		ByteOffset: newOffset,
+		Sessions:   allSessions,
 	})
 }

@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// ansiRe matches ANSI escape sequences (CSI, OSC, and single-char escapes).
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]`)
+
 // InferStatus determines session status from pane content changes.
 // Priority: error > active (content changed) > done (>60s, prompt visible) > idle (>30s) > active
 func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns []string, promptPattern string) string {
@@ -40,9 +43,15 @@ func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns
 	return "active"
 }
 
-// DetectWaiting checks agent panes for input prompt patterns.
-// Returns true and the detected prompt text if an agent is waiting for input.
-func DetectWaiting(panes []Pane, inputPatterns []string) (bool, string) {
+// WaitingPane records which pane is waiting and its prompt text.
+type WaitingPane struct {
+	Index  int
+	Prompt string
+}
+
+// DetectWaitingPanes checks each agent pane individually for input prompt patterns.
+func DetectWaitingPanes(panes []Pane, inputPatterns []string) []WaitingPane {
+	var result []WaitingPane
 	for _, pane := range panes {
 		if pane.Type != "agent" || pane.Content == "" {
 			continue
@@ -52,23 +61,33 @@ func DetectWaiting(panes []Pane, inputPatterns []string) (bool, string) {
 		if len(check) > 5 {
 			check = check[len(check)-5:]
 		}
+		matched := false
 		for _, pattern := range inputPatterns {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
 				continue
 			}
 			for _, line := range check {
-				if re.MatchString(line) {
+				cleaned := ansiRe.ReplaceAllString(line, "")
+				if re.MatchString(cleaned) {
 					prompt := lines
 					if len(prompt) > 3 {
 						prompt = prompt[len(prompt)-3:]
 					}
-					return true, strings.Join(prompt, "\n")
+					result = append(result, WaitingPane{
+						Index:  pane.Index,
+						Prompt: strings.Join(prompt, "\n"),
+					})
+					matched = true
+					break
 				}
+			}
+			if matched {
+				break
 			}
 		}
 	}
-	return false, ""
+	return result
 }
 
 // StatusIcon returns a Unicode icon for a status string.

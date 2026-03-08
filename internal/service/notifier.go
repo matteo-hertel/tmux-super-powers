@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +102,10 @@ func (n *Notifier) check(sessions []Session) {
 		}
 
 		if prev.Status != s.Status {
+			// Skip notification if user is attached to this tmux session.
+			if sessionHasAttachedClient(s.Name) {
+				continue
+			}
 			msg := n.statusMessage(s, prev.Status)
 			if msg != nil {
 				key := fmt.Sprintf("%s:%s", s.Name, s.Status)
@@ -241,4 +246,13 @@ func (n *Notifier) statusMessage(s Session, prevStatus string) *PushMessage {
 	default:
 		return nil
 	}
+}
+
+// sessionHasAttachedClient returns true if any tmux client is attached to the session.
+func sessionHasAttachedClient(sessionName string) bool {
+	out, err := exec.Command("tmux", "list-clients", "-t", sessionName, "-F", "#{client_name}").Output()
+	if err != nil {
+		return false
+	}
+	return len(strings.TrimSpace(string(out))) > 0
 }

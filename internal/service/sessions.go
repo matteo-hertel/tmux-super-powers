@@ -65,8 +65,32 @@ func PaneTypeFromProcess(process string) string {
 	case "bash", "zsh", "fish", "sh", "":
 		return "shell"
 	default:
+		// Claude Code reports its version (e.g. "2.1.71") as the process name.
+		if isClaudeVersion(process) {
+			return "agent"
+		}
 		return "process"
 	}
+}
+
+// isClaudeVersion returns true if the process name looks like a semver version
+// (e.g. "2.1.71"), which is how Claude Code appears in tmux pane_current_command.
+func isClaudeVersion(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ListSessions returns all tmux session names.

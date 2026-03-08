@@ -14,6 +14,7 @@ import (
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 	"github.com/matteo-hertel/tmux-super-powers/internal/server"
+	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,19 @@ var deviceListCmd = &cobra.Command{
 	Run:   runDeviceList,
 }
 
+var deviceNotifyCmd = &cobra.Command{
+	Use:   "notify",
+	Short: "Send a push notification to paired devices",
+	Long: `Send a test push notification to one or more paired devices.
+Shows an interactive list of devices with push tokens registered.
+
+Examples:
+  tsp device notify
+  tsp device notify --title "Heads up" --body "Deploy finished"
+  tsp device notify --all --title "Alert" --body "Server restarting"`,
+	Run: runDeviceNotify,
+}
+
 var deviceRevokeCmd = &cobra.Command{
 	Use:   "revoke <id|name>",
 	Short: "Revoke a paired device",
@@ -63,9 +77,15 @@ Examples:
 func init() {
 	devicePairCmd.Flags().String("name", "", "Name for the device being paired")
 	devicePairCmd.Flags().String("address", "", "Override server address in QR code (e.g. my-machine.tail1234.ts.net)")
+	deviceNotifyCmd.Flags().String("title", "Test notification", "Notification title")
+	deviceNotifyCmd.Flags().String("body", "Push notifications are working!", "Notification body")
+	deviceNotifyCmd.Flags().String("category", "done", "Notification category: waiting, done, error")
+	deviceNotifyCmd.Flags().String("session", "", "Tmux session name (for deep linking)")
+	deviceNotifyCmd.Flags().Bool("all", false, "Send to all devices without prompting")
 	deviceCmd.AddCommand(devicePairCmd)
 	deviceCmd.AddCommand(deviceListCmd)
 	deviceCmd.AddCommand(deviceRevokeCmd)
+	deviceCmd.AddCommand(deviceNotifyCmd)
 }
 
 func runDevicePair(cmd *cobra.Command, args []string) {
@@ -242,6 +262,117 @@ func runDeviceList(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.ID, d.Name, pairedAt, lastSeen)
 	}
 	w.Flush()
+}
+
+func runDeviceNotify(cmd *cobra.Command, args []string) {
+	title, _ := cmd.Flags().GetString("title")
+	body, _ := cmd.Flags().GetString("body")
+	category, _ := cmd.Flags().GetString("category")
+	sessionFlag, _ := cmd.Flags().GetString("session")
+	sendAll, _ := cmd.Flags().GetBool("all")
+
+	storePath := filepath.Join(config.TspDir(), "devices.json")
+	store := device.NewStore(storePath)
+
+	devices, err := store.List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading devices: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Filter to devices with push tokens
+	var pushDevices []device.Device
+	for _, d := range devices {
+		if d.PushToken != "" {
+			pushDevices = append(pushDevices, d)
+		}
+	}
+
+	if len(pushDevices) == 0 {
+		fmt.Fprintln(os.Stderr, "No devices with push tokens registered.")
+		fmt.Fprintln(os.Stderr, "Open the mobile app first so it can register its push token.")
+		os.Exit(1)
+	}
+
+	var selected []device.Device
+
+	if sendAll {
+		selected = pushDevices
+	} else {
+		// Show interactive selection
+		fmt.Println("Select devices to notify (space-separated numbers, or 'a' for all):")
+		fmt.Println()
+		for i, d := range pushDevices {
+			lastSeen := "never"
+			if !d.LastSeen.IsZero() {
+				lastSeen = d.LastSeen.Local().Format("2006-01-02 15:04")
+			}
+			fmt.Printf("  [%d] %s (last seen: %s)\n", i+1, d.Name, lastSeen)
+		}
+		fmt.Println()
+		fmt.Printf("Choice: ")
+
+		var input string
+		fmt.Scanln(&input)
+		input = strings.TrimSpace(input)
+
+		if input == "" {
+			fmt.Println("No selection made.")
+			return
+		}
+
+		if input == "a" || input == "A" || input == "all" {
+			selected = pushDevices
+		} else {
+			seen := make(map[int]bool)
+			for _, part := range strings.Fields(input) {
+				var idx int
+				if _, err := fmt.Sscanf(part, "%d", &idx); err != nil || idx < 1 || idx > len(pushDevices) {
+					fmt.Fprintf(os.Stderr, "Invalid selection: %s\n", part)
+					os.Exit(1)
+				}
+				if !seen[idx] {
+					seen[idx] = true
+					selected = append(selected, pushDevices[idx-1])
+				}
+			}
+		}
+	}
+
+	if len(selected) == 0 {
+		fmt.Println("No devices selected.")
+		return
+	}
+
+	// Build and send push messages
+	push := service.NewPushClient()
+	var messages []service.PushMessage
+	for _, d := range selected {
+		data := map[string]string{"type": "notify"}
+		if sessionFlag != "" {
+			data["sessionName"] = sessionFlag
+		}
+		messages = append(messages, service.PushMessage{
+			To:         d.PushToken,
+			Title:      title,
+			Body:       body,
+			Sound:      "default",
+			Priority:   "high",
+			CategoryID: category,
+			Data:       data,
+		})
+	}
+
+	if err := push.Send(messages); err != nil {
+		fmt.Fprintf(os.Stderr, "Push failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	names := make([]string, len(selected))
+	for i, d := range selected {
+		names[i] = d.Name
+	}
+	fmt.Printf("Notification sent to %d device(s): %s\n", len(selected), strings.Join(names, ", "))
 }
 
 func runDeviceRevoke(cmd *cobra.Command, args []string) {

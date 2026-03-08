@@ -158,12 +158,17 @@ func (m *Monitor) poll() {
 				s.Panes[i].Status = s.Status
 			}
 		}
-		// Detect agent waiting for input (overrides idle/active).
+		// Detect per-pane waiting for input (only mark the specific pane that's waiting).
 		if s.Status != "error" && s.Status != "done" {
-			if waiting, prompt := DetectWaiting(s.Panes, m.inputPatterns); waiting {
+			waitingPanes := DetectWaitingPanes(s.Panes, m.inputPatterns)
+			if len(waitingPanes) > 0 {
 				s.Status = "waiting"
+				waitingIdx := make(map[int]string)
+				for _, wp := range waitingPanes {
+					waitingIdx[wp.Index] = wp.Prompt
+				}
 				for i := range s.Panes {
-					if s.Panes[i].Type == "agent" {
+					if prompt, ok := waitingIdx[s.Panes[i].Index]; ok {
 						s.Panes[i].Status = "waiting"
 						s.Panes[i].Prompt = prompt
 					}

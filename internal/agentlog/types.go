@@ -72,7 +72,8 @@ type Chunk struct {
 
 // AgentLogResponse is the API response.
 type AgentLogResponse struct {
-	Chunks     []Chunk `json:"chunks"`
-	Ongoing    bool    `json:"ongoing"`
-	ByteOffset int64   `json:"byteOffset"`
+	Chunks     []Chunk        `json:"chunks"`
+	Ongoing    bool           `json:"ongoing"`
+	ByteOffset int64          `json:"byteOffset"`
+	Sessions   []AgentSession `json:"sessions,omitempty"`
 }

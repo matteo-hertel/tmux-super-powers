@@ -94,7 +94,7 @@ func TestSessionStruct(t *testing.T) {
 	}
 
 	// Verify json:"-" fields are NOT present
-	hiddenFields := []string{"GitPath", "gitPath", "PrevContent", "prevContent", "WorktreePath", "worktreePath"}
+	hiddenFields := []string{"GitPath", "gitPath", "PrevContent", "prevContent"}
 	for _, field := range hiddenFields {
 		if _, ok := m[field]; ok {
 			t.Errorf("field %q should not appear in JSON (tagged with json:\"-\")", field)

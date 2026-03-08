@@ -8,32 +8,35 @@ import (
 	"time"
 )
 
-// FindJSONL finds the most recent Claude Code JSONL file for a session directory.
-func FindJSONL(sessionDir string) (string, error) {
+// AgentSession describes a single Claude Code JSONL log file.
+type AgentSession struct {
+	ID      string `json:"id"`      // filename without extension
+	Path    string `json:"-"`       // full path (not exposed to API)
+	Ongoing bool   `json:"ongoing"` // modified within last 2 minutes
+	ModTime int64  `json:"modTime"` // unix millis
+}
+
+// FindAllJSONL returns all Claude Code JSONL files for a session directory,
+// sorted by modification time (most recent first).
+func FindAllJSONL(sessionDir string) ([]AgentSession, error) {
 	if sessionDir == "" {
-		return "", os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	// Claude Code encodes project path: replace "/" with "-"
 	encoded := strings.ReplaceAll(sessionDir, "/", "-")
 	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
 
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	type jsonlFile struct {
-		path    string
-		modTime int64
-	}
-
-	var files []jsonlFile
+	var sessions []AgentSession
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
@@ -42,21 +45,38 @@ func FindJSONL(sessionDir string) (string, error) {
 		if err != nil {
 			continue
 		}
-		files = append(files, jsonlFile{
-			path:    filepath.Join(projectDir, e.Name()),
-			modTime: info.ModTime().UnixMilli(),
+		fullPath := filepath.Join(projectDir, e.Name())
+		sessions = append(sessions, AgentSession{
+			ID:      strings.TrimSuffix(e.Name(), ".jsonl"),
+			Path:    fullPath,
+			Ongoing: IsOngoing(fullPath),
+			ModTime: info.ModTime().UnixMilli(),
 		})
 	}
 
-	if len(files) == 0 {
-		return "", os.ErrNotExist
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime > files[j].modTime
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].ModTime > sessions[j].ModTime
 	})
 
-	return files[0].path, nil
+	return sessions, nil
+}
+
+// FindJSONL finds the most recent Claude Code JSONL file for a session directory.
+func FindJSONL(sessionDir string) (string, error) {
+	sessions, err := FindAllJSONL(sessionDir)
+	if err != nil {
+		return "", err
+	}
+	if len(sessions) == 0 {
+		return "", os.ErrNotExist
+	}
+	// Prefer ongoing sessions over stale ones.
+	for _, s := range sessions {
+		if s.Ongoing {
+			return s.Path, nil
+		}
+	}
+	return sessions[0].Path, nil
 }
 
 // IsOngoing checks if a JSONL file was modified within the last 2 minutes.
