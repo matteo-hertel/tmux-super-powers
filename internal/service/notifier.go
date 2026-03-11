@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 )
@@ -17,9 +16,14 @@ type Notifier struct {
 	deviceStore *device.Store
 	push        *PushClient
 
-	mu       sync.Mutex
-	prev     map[string]sessionSnapshot
-	debounce map[string]time.Time
+	mu   sync.Mutex
+	prev map[string]sessionSnapshot
+	// sent tracks which notification has already been delivered for a session.
+	// Key: "sessionName:status" (e.g. "my-task:done").
+	// An entry is added when the notification fires and removed only when the
+	// session moves to a *different* status, preventing repeated notifications
+	// while the status flickers back and forth.
+	sent map[string]bool
 
 	stopCh chan struct{}
 }
@@ -36,7 +40,7 @@ func NewNotifier(monitor *Monitor, deviceStore *device.Store) *Notifier {
 		deviceStore: deviceStore,
 		push:        NewPushClient(),
 		prev:        make(map[string]sessionSnapshot),
-		debounce:    make(map[string]time.Time),
+		sent:        make(map[string]bool),
 		stopCh:      make(chan struct{}),
 	}
 }
@@ -72,7 +76,6 @@ func (n *Notifier) check(sessions []Session) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	now := time.Now()
 	tokens := n.deviceStore.PushTokens()
 	if len(tokens) == 0 {
 		for _, s := range sessions {
@@ -102,6 +105,12 @@ func (n *Notifier) check(sessions []Session) {
 		}
 
 		if prev.Status != s.Status {
+			// Status genuinely changed — clear the sent flag for the OLD status
+			// so that if it returns to that status later (legitimately) we can
+			// notify again.
+			oldKey := fmt.Sprintf("%s:%s", s.Name, prev.Status)
+			delete(n.sent, oldKey)
+
 			// Skip notification if user is attached to this tmux session.
 			if sessionHasAttachedClient(s.Name) {
 				continue
@@ -109,10 +118,12 @@ func (n *Notifier) check(sessions []Session) {
 			msg := n.statusMessage(s, prev.Status)
 			if msg != nil {
 				key := fmt.Sprintf("%s:%s", s.Name, s.Status)
-				if last, ok := n.debounce[key]; ok && now.Sub(last) < 30*time.Second {
+				if n.sent[key] {
+					// Already notified for this session+status; skip until
+					// the session moves away and comes back.
 					continue
 				}
-				n.debounce[key] = now
+				n.sent[key] = true
 				for _, token := range tokens {
 					m := *msg
 					m.To = token
@@ -123,10 +134,10 @@ func (n *Notifier) check(sessions []Session) {
 
 		if prev.CIStatus != "fail" && ci == "fail" {
 			key := fmt.Sprintf("%s:ci-fail", s.Name)
-			if last, ok := n.debounce[key]; ok && now.Sub(last) < 30*time.Second {
+			if n.sent[key] {
 				continue
 			}
-			n.debounce[key] = now
+			n.sent[key] = true
 			pr := s.PR
 			for _, token := range tokens {
 				messages = append(messages, PushMessage{
@@ -143,6 +154,12 @@ func (n *Notifier) check(sessions []Session) {
 				})
 			}
 		}
+
+		// When CI recovers, clear the ci-fail sent flag so a future failure
+		// can trigger a new notification.
+		if prev.CIStatus == "fail" && ci != "fail" {
+			delete(n.sent, fmt.Sprintf("%s:ci-fail", s.Name))
+		}
 	}
 
 	// Clean up entries for removed sessions.
@@ -155,9 +172,12 @@ func (n *Notifier) check(sessions []Session) {
 			delete(n.prev, name)
 		}
 	}
-	for key, t := range n.debounce {
-		if now.Sub(t) > 5*time.Minute {
-			delete(n.debounce, key)
+	// Clean sent entries for sessions that no longer exist.
+	for key := range n.sent {
+		// Keys are "sessionName:status" — extract session name.
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) > 0 && !current[parts[0]] {
+			delete(n.sent, key)
 		}
 	}
 
@@ -173,7 +193,7 @@ func (n *Notifier) check(sessions []Session) {
 func (n *Notifier) statusMessage(s Session, prevStatus string) *PushMessage {
 	switch s.Status {
 	case "done":
-		if prevStatus != "active" && prevStatus != "idle" && prevStatus != "waiting" {
+		if prevStatus != "active" && prevStatus != "idle" && prevStatus != "waiting" && prevStatus != "error" {
 			return nil
 		}
 		body := "Session completed"
@@ -189,33 +209,6 @@ func (n *Notifier) statusMessage(s Session, prevStatus string) *PushMessage {
 				"type":        "status_change",
 				"sessionName": s.Name,
 				"status":      "done",
-			},
-		}
-
-	case "error":
-		body := "Agent encountered an error"
-		for _, pane := range s.Panes {
-			if pane.Type == "agent" && pane.Content != "" {
-				lines := strings.Split(strings.TrimRight(pane.Content, "\n"), "\n")
-				if len(lines) > 0 {
-					body = lines[len(lines)-1]
-					if len(body) > 100 {
-						body = body[:100]
-					}
-				}
-				break
-			}
-		}
-		return &PushMessage{
-			Title:      fmt.Sprintf("Agent error: %s", s.Name),
-			Body:       body,
-			Sound:      "default",
-			Priority:   "high",
-			CategoryID: "error",
-			Data: map[string]string{
-				"type":        "status_change",
-				"sessionName": s.Name,
-				"status":      "error",
 			},
 		}
 

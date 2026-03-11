@@ -13,10 +13,19 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[(
 // InferStatus determines session status from pane content changes.
 // Priority: error > active (content changed) > done (>60s, prompt visible) > idle (>30s) > active
 func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns []string, promptPattern string) string {
-	// Check for error patterns first (highest priority)
+	// Check for error patterns in the last few lines only (not the entire buffer,
+	// which may contain historical output mentioning errors).
+	lines := strings.Split(strings.TrimRight(current, "\n"), "\n")
+	tailLines := lines
+	if len(tailLines) > 5 {
+		tailLines = tailLines[len(tailLines)-5:]
+	}
 	for _, pattern := range errorPatterns {
-		if strings.Contains(current, pattern) {
-			return "error"
+		for _, line := range tailLines {
+			cleaned := ansiRe.ReplaceAllString(line, "")
+			if strings.Contains(cleaned, pattern) {
+				return "error"
+			}
 		}
 	}
 	// Content changed -> active
@@ -25,12 +34,17 @@ func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns
 	}
 	elapsed := now.Sub(lastChanged)
 	// Check for shell prompt (done state)
+	// Check last several lines to handle status bars below the prompt (e.g. Claude Code).
 	if elapsed > 60*time.Second && promptPattern != "" {
 		if re, err := regexp.Compile(promptPattern); err == nil {
-			lines := strings.Split(strings.TrimRight(current, "\n"), "\n")
-			if len(lines) > 0 {
-				lastLine := strings.TrimRight(lines[len(lines)-1], " ")
-				if re.MatchString(lastLine) {
+			check := lines
+			if len(check) > 10 {
+				check = check[len(check)-10:]
+			}
+			for _, line := range check {
+				cleaned := ansiRe.ReplaceAllString(line, "")
+				cleaned = strings.TrimRight(cleaned, " \t\u00a0")
+				if re.MatchString(cleaned) {
 					return "done"
 				}
 			}

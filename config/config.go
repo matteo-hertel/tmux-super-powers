@@ -134,7 +134,7 @@ func LoadFrom(configPath string) (*Config, error) {
 		cfg.Dash.RefreshMs = 500
 	}
 	if cfg.Dash.PromptPattern == "" {
-		cfg.Dash.PromptPattern = `\$\s*$`
+		cfg.Dash.PromptPattern = `(\$|❯)\s*$`
 	}
 	if len(cfg.Dash.ErrorPatterns) == 0 {
 		cfg.Dash.ErrorPatterns = []string{"FAIL", "panic:", "Error:"}
@@ -205,7 +205,7 @@ func defaultConfig() *Config {
 		Dash: DashConfig{
 			RefreshMs:     500,
 			ErrorPatterns: []string{"FAIL", "panic:", "Error:"},
-			PromptPattern: `\$\s*$`,
+			PromptPattern: `(\$|❯)\s*$`,
 			InputPatterns: []string{
 				`^\? `,
 				`\(y/n\)`,
