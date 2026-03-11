@@ -18,12 +18,13 @@ type Notifier struct {
 
 	mu   sync.Mutex
 	prev map[string]sessionSnapshot
-	// sent tracks which notification has already been delivered for a session.
-	// Key: "sessionName:status" (e.g. "my-task:done").
-	// An entry is added when the notification fires and removed only when the
-	// session moves to a *different* status, preventing repeated notifications
-	// while the status flickers back and forth.
-	sent map[string]bool
+	// lastNotified tracks the last status we sent a push notification for,
+	// per session. We only send a new notification when the status changes to
+	// something DIFFERENT from what we last notified. This prevents spam when
+	// status flickers (e.g. done → active → done due to terminal content jitter).
+	// Cleared only when the session is removed.
+	lastNotified   map[string]string // session name → last notified status
+	lastCINotified map[string]string // session name → last notified CI status
 
 	stopCh chan struct{}
 }
@@ -36,12 +37,13 @@ type sessionSnapshot struct {
 // NewNotifier creates a notifier that watches the given monitor.
 func NewNotifier(monitor *Monitor, deviceStore *device.Store) *Notifier {
 	return &Notifier{
-		monitor:     monitor,
-		deviceStore: deviceStore,
-		push:        NewPushClient(),
-		prev:        make(map[string]sessionSnapshot),
-		sent:        make(map[string]bool),
-		stopCh:      make(chan struct{}),
+		monitor:        monitor,
+		deviceStore:    deviceStore,
+		push:           NewPushClient(),
+		prev:           make(map[string]sessionSnapshot),
+		lastNotified:   make(map[string]string),
+		lastCINotified: make(map[string]string),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -105,25 +107,19 @@ func (n *Notifier) check(sessions []Session) {
 		}
 
 		if prev.Status != s.Status {
-			// Status genuinely changed — clear the sent flag for the OLD status
-			// so that if it returns to that status later (legitimately) we can
-			// notify again.
-			oldKey := fmt.Sprintf("%s:%s", s.Name, prev.Status)
-			delete(n.sent, oldKey)
-
 			// Skip notification if user is attached to this tmux session.
 			if sessionHasAttachedClient(s.Name) {
 				continue
 			}
 			msg := n.statusMessage(s, prev.Status)
 			if msg != nil {
-				key := fmt.Sprintf("%s:%s", s.Name, s.Status)
-				if n.sent[key] {
-					// Already notified for this session+status; skip until
-					// the session moves away and comes back.
+				// Only notify if this is a DIFFERENT status from what we last
+				// notified. This prevents spam from status flickering
+				// (done → active → done would not re-notify).
+				if n.lastNotified[s.Name] == s.Status {
 					continue
 				}
-				n.sent[key] = true
+				n.lastNotified[s.Name] = s.Status
 				for _, token := range tokens {
 					m := *msg
 					m.To = token
@@ -133,11 +129,10 @@ func (n *Notifier) check(sessions []Session) {
 		}
 
 		if prev.CIStatus != "fail" && ci == "fail" {
-			key := fmt.Sprintf("%s:ci-fail", s.Name)
-			if n.sent[key] {
+			if n.lastCINotified[s.Name] == "fail" {
 				continue
 			}
-			n.sent[key] = true
+			n.lastCINotified[s.Name] = "fail"
 			pr := s.PR
 			for _, token := range tokens {
 				messages = append(messages, PushMessage{
@@ -155,10 +150,9 @@ func (n *Notifier) check(sessions []Session) {
 			}
 		}
 
-		// When CI recovers, clear the ci-fail sent flag so a future failure
-		// can trigger a new notification.
+		// When CI recovers, clear so a future failure can re-notify.
 		if prev.CIStatus == "fail" && ci != "fail" {
-			delete(n.sent, fmt.Sprintf("%s:ci-fail", s.Name))
+			delete(n.lastCINotified, s.Name)
 		}
 	}
 
@@ -170,14 +164,8 @@ func (n *Notifier) check(sessions []Session) {
 	for name := range n.prev {
 		if !current[name] {
 			delete(n.prev, name)
-		}
-	}
-	// Clean sent entries for sessions that no longer exist.
-	for key := range n.sent {
-		// Keys are "sessionName:status" — extract session name.
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) > 0 && !current[parts[0]] {
-			delete(n.sent, key)
+			delete(n.lastNotified, name)
+			delete(n.lastCINotified, name)
 		}
 	}
 
