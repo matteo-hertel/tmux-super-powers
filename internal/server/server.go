@@ -71,7 +71,7 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 		adminToken:     adminToken,
 		authMiddleware: authMiddleware,
 	}
-	srv.notifier = service.NewNotifier(srv.monitor, srv.deviceStore)
+	srv.notifier = service.NewNotifier(srv.monitor, srv.deviceStore, bus)
 	srv.watcher = service.NewWatcher(bus, cfg.Watcher)
 	srv.watcher.SetMonitor(srv.monitor)
 	return srv, nil
