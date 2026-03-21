@@ -8,39 +8,39 @@ import (
 
 func TestPaneTypeFromProcess(t *testing.T) {
 	tests := []struct {
-		process string
-		want    string
+		process  string
+		expected string
 	}{
-		// Editors
 		{"nvim", "editor"},
 		{"vim", "editor"},
 		{"emacs", "editor"},
 		{"nano", "editor"},
-		// Agent
 		{"claude", "agent"},
-		// Shells
+		{"aider", "agent"},
+		{"codex", "agent"},
 		{"bash", "shell"},
 		{"zsh", "shell"},
 		{"fish", "shell"},
 		{"sh", "shell"},
 		{"", "shell"},
-		// Process (everything else)
-		{"go", "process"},
+		{"2.1.71", "agent"},       // Claude Code version
+		{"2.1.81", "agent"},       // newer version
+		{"3.0.0", "agent"},        // future major
 		{"node", "process"},
-		{"python", "process"},
-		{"make", "process"},
-		{"cargo", "process"},
+		{"python3", "process"},
+		{"go", "process"},
+		{"2.1.71-rc1", "process"}, // non-standard version — not agent
+		{"v2.1.71", "process"},    // prefixed — not agent
 	}
-
 	for _, tt := range tests {
 		name := tt.process
 		if name == "" {
 			name = "empty"
 		}
 		t.Run(name, func(t *testing.T) {
-			got := PaneTypeFromProcess(tt.process)
-			if got != tt.want {
-				t.Errorf("PaneTypeFromProcess(%q) = %q, want %q", tt.process, got, tt.want)
+			result := PaneTypeFromProcess(tt.process)
+			if result != tt.expected {
+				t.Errorf("PaneTypeFromProcess(%q) = %q, want %q", tt.process, result, tt.expected)
 			}
 		})
 	}

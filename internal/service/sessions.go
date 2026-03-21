@@ -60,7 +60,7 @@ func PaneTypeFromProcess(process string) string {
 	switch process {
 	case "nvim", "vim", "emacs", "nano":
 		return "editor"
-	case "claude":
+	case "claude", "aider", "codex":
 		return "agent"
 	case "bash", "zsh", "fish", "sh", "":
 		return "shell"
