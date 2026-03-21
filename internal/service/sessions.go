@@ -60,7 +60,7 @@ func PaneTypeFromProcess(process string) string {
 	switch process {
 	case "nvim", "vim", "emacs", "nano":
 		return "editor"
-	case "claude":
+	case "claude", "aider", "codex":
 		return "agent"
 	case "bash", "zsh", "fish", "sh", "":
 		return "shell"
@@ -116,6 +116,96 @@ func ListSessions() ([]string, error) {
 		return nil, nil
 	}
 	return strings.Split(raw, "\n"), nil
+}
+
+// GetAgentPaneCwd returns the working directory of a specific pane.
+func GetAgentPaneCwd(session string, pane int) string {
+	return tmuxpkg.GetPaneCwdByIndex(session, pane)
+}
+
+// GetAgentSessionID resolves the Claude Code JSONL session UUID for a tmux pane
+// by tracing the process tree and checking open file descriptors via lsof.
+// Claude Code keeps ~/.claude/tasks/<session-uuid>/ open while running.
+// Returns "" if the session ID cannot be determined.
+func GetAgentSessionID(session string, pane int) string {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	// Step 1: Get pane PID
+	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidOut, err := pidCmd.Output()
+	if err != nil {
+		return ""
+	}
+	panePid := strings.TrimSpace(string(pidOut))
+	if panePid == "" {
+		return ""
+	}
+
+	// Step 2: Find the claude process (may be the pane itself or a child)
+	claudePid := findClaudePid(panePid)
+	if claudePid == "" {
+		return ""
+	}
+
+	// Step 3: Extract session UUID from lsof — claude keeps ~/.claude/tasks/<uuid>/ open
+	lsofCmd := exec.Command("lsof", "-p", claudePid)
+	lsofOut, err := lsofCmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(lsofOut), "\n") {
+		if strings.Contains(line, ".claude/tasks/") {
+			// Extract the UUID directory name
+			idx := strings.Index(line, ".claude/tasks/")
+			if idx < 0 {
+				continue
+			}
+			rest := line[idx+len(".claude/tasks/"):]
+			// UUID is up to the next / or end of field
+			if slashIdx := strings.IndexByte(rest, '/'); slashIdx > 0 {
+				rest = rest[:slashIdx]
+			}
+			rest = strings.TrimSpace(rest)
+			if rest != "" && len(rest) > 8 { // sanity check: UUID-like
+				return rest
+			}
+		}
+	}
+	return ""
+}
+
+// findClaudePid finds the claude process PID from a shell PID by checking children.
+func findClaudePid(shellPid string) string {
+	// Check if the shell itself is claude
+	commCmd := exec.Command("ps", "-p", shellPid, "-o", "comm=")
+	commOut, err := commCmd.Output()
+	if err == nil {
+		comm := strings.TrimSpace(string(commOut))
+		if comm == "claude" || isClaudeVersion(comm) {
+			return shellPid
+		}
+	}
+	// Check children
+	pgrepCmd := exec.Command("pgrep", "-P", shellPid)
+	pgrepOut, err := pgrepCmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		commCmd := exec.Command("ps", "-p", pid, "-o", "comm=")
+		commOut, err := commCmd.Output()
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(commOut))
+		if comm == "claude" || isClaudeVersion(comm) {
+			return pid
+		}
+	}
+	return ""
 }
 
 // GetPaneProcess returns the current command running in a specific pane.

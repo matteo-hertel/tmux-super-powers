@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -62,11 +63,13 @@ func TaskToBranch(task string) string {
 
 // SpawnResult holds the result of spawning a single agent.
 type SpawnResult struct {
-	Task    string `json:"task"`
-	Branch  string `json:"branch"`
-	Session string `json:"session"`
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
+	Task         string `json:"task"`
+	Branch       string `json:"branch"`
+	Session      string `json:"session"`
+	Status       string `json:"status"`
+	Error        string `json:"error,omitempty"`
+	WorktreePath string `json:"worktreePath,omitempty"`
+	GitPath      string `json:"gitPath,omitempty"`
 }
 
 // SpawnAgents deploys agents with tasks into worktrees.
@@ -102,7 +105,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branchShort))
 		worktreePath := filepath.Join(worktreeBase, fmt.Sprintf("%s-%s", repoName, branchShort))
 
-		result := SpawnResult{Task: task, Branch: branch, Session: sessionName}
+		result := SpawnResult{Task: task, Branch: branch, Session: sessionName, WorktreePath: worktreePath, GitPath: repoRoot}
 
 		if !spawnBranchExists(repoRoot, branch) {
 			if err := spawnCreateBranch(repoRoot, branch, baseBranch); err != nil {
@@ -123,6 +126,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		}
 
 		if !noInstall {
+			spawnCopyNodeModules(repoRoot, worktreePath)
 			pm := spawnDetectPM(repoRoot)
 			if pm != "" {
 				spawnRunPM(pm, worktreePath, repoRoot)
@@ -197,6 +201,38 @@ func spawnDetectPM(repoRoot string) string {
 		return "npm"
 	}
 	return ""
+}
+
+// spawnCopyNodeModules hardlink-copies node_modules from repoRoot to worktreePath.
+// Uses filepath.WalkDir + os.Link for platform-agnostic hardlinks (works on macOS and Linux).
+// Silently returns nil if node_modules doesn't exist in repoRoot.
+func spawnCopyNodeModules(repoRoot, worktreePath string) error {
+	srcNM := filepath.Join(repoRoot, "node_modules")
+	if _, err := os.Stat(srcNM); err != nil {
+		return nil
+	}
+	dstNM := filepath.Join(worktreePath, "node_modules")
+	return filepath.WalkDir(srcNM, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries
+		}
+		rel, _ := filepath.Rel(srcNM, path)
+		dst := filepath.Join(dstNM, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0755)
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return nil
+			}
+			return os.Symlink(target, dst)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return os.Link(path, dst)
+	})
 }
 
 func spawnRunPM(pm, path, repoRoot string) {

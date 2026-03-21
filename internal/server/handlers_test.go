@@ -24,7 +24,8 @@ func newTestServer() *Server {
 
 	return &Server{
 		cfg:     &config.Config{},
-		monitor: service.NewMonitor(500, nil, "", nil),
+		bus:     service.NewBus(),
+		monitor: service.NewMonitor(500, nil, "", nil, service.NewBus()),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},

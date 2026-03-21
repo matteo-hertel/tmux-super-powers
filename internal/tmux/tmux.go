@@ -140,7 +140,12 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 
 // GetPaneCwd returns the current working directory of a session's first pane.
 func GetPaneCwd(session string) string {
-	target := fmt.Sprintf("%s:0.0", session)
+	return GetPaneCwdByIndex(session, 0)
+}
+
+// GetPaneCwdByIndex returns the current working directory of a specific pane.
+func GetPaneCwdByIndex(session string, pane int) string {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")
 	out, err := cmd.Output()
 	if err != nil {

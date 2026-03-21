@@ -74,9 +74,13 @@ Flags:
 				if wt, isWt := fm.wtMap[session]; isWt && !sessionsOnly {
 					fmt.Printf("Removing worktree session: %s\n", session)
 					tmuxpkg.KillSession(session)
-					os.RemoveAll(wt.Path)
-					exec.Command("git", "worktree", "remove", wt.Path, "--force").Run()
-					exec.Command("git", "branch", "-D", wt.Branch).Run()
+					if err := exec.Command("git", "worktree", "remove", wt.Path, "--force").Run(); err != nil {
+						fmt.Printf("  Warning: git worktree remove failed: %v\n", err)
+						exec.Command("git", "worktree", "prune").Run()
+					}
+					if err := exec.Command("git", "branch", "-D", wt.Branch).Run(); err != nil {
+						fmt.Printf("  Warning: branch delete failed: %v\n", err)
+					}
 					fmt.Printf("  Worktree, branch, and session removed.\n")
 				} else {
 					fmt.Printf("Killing session: %s\n", session)

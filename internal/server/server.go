@@ -26,8 +26,10 @@ var indexHTML []byte
 // Server is the HTTP/WebSocket API server.
 type Server struct {
 	cfg            *config.Config
+	bus            *service.Bus
 	monitor        *service.Monitor
 	notifier       *service.Notifier
+	watcher        *service.Watcher
 	upgrader       websocket.Upgrader
 	httpSrv        *http.Server
 	deviceStore    *device.Store
@@ -50,13 +52,16 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 	pairing := device.NewPairingManager(5 * time.Minute)
 	authMiddleware := auth.NewMiddleware(adminToken, deviceStore)
 
+	bus := service.NewBus()
 	srv := &Server{
 		cfg: cfg,
+		bus: bus,
 		monitor: service.NewMonitor(
 			cfg.Serve.RefreshMs,
 			cfg.Dash.ErrorPatterns,
 			cfg.Dash.PromptPattern,
 			cfg.Dash.InputPatterns,
+			bus,
 		),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
@@ -67,6 +72,8 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 		authMiddleware: authMiddleware,
 	}
 	srv.notifier = service.NewNotifier(srv.monitor, srv.deviceStore)
+	srv.watcher = service.NewWatcher(bus, cfg.Watcher)
+	srv.watcher.SetMonitor(srv.monitor)
 	return srv, nil
 }
 
@@ -76,6 +83,7 @@ func (s *Server) Start(bind string, port int) error {
 	s.port = port
 	s.monitor.Start()
 	s.notifier.Start()
+	s.watcher.Start()
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
@@ -94,6 +102,7 @@ func (s *Server) Start(bind string, port int) error {
 
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() error {
+	s.watcher.Stop()
 	s.notifier.Stop()
 	s.monitor.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

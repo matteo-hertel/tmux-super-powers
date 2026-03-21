@@ -10,14 +10,15 @@ import (
 )
 
 type Config struct {
-	Directories       []string    `yaml:"directories"`
-	IgnoreDirectories []string    `yaml:"ignore_directories"`
-	Sandbox           Sandbox     `yaml:"sandbox"`
-	Projects          Projects    `yaml:"projects"`
-	Editor            string      `yaml:"editor"`
-	Dash              DashConfig  `yaml:"dash"`
-	Spawn             SpawnConfig `yaml:"spawn"`
-	Serve             ServeConfig `yaml:"serve"`
+	Directories       []string      `yaml:"directories"`
+	IgnoreDirectories []string      `yaml:"ignore_directories"`
+	Sandbox           Sandbox       `yaml:"sandbox"`
+	Projects          Projects      `yaml:"projects"`
+	Editor            string        `yaml:"editor"`
+	Dash              DashConfig    `yaml:"dash"`
+	Spawn             SpawnConfig   `yaml:"spawn"`
+	Serve             ServeConfig   `yaml:"serve"`
+	Watcher           WatcherConfig `yaml:"watcher"`
 }
 
 type DashConfig struct {
@@ -37,6 +38,13 @@ type ServeConfig struct {
 	Port      int    `yaml:"port"`
 	Bind      string `yaml:"bind"`
 	RefreshMs int    `yaml:"refresh_ms"`
+}
+
+type WatcherConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	PollIntervalS int  `yaml:"poll_interval_s"`
+	MaxCIRetries  int  `yaml:"max_ci_retries"`
+	AutoCleanup   bool `yaml:"auto_cleanup"`
 }
 
 type Sandbox struct {
@@ -166,6 +174,14 @@ func LoadFrom(configPath string) (*Config, error) {
 		cfg.Serve.RefreshMs = cfg.Dash.RefreshMs
 	}
 
+	// Watcher defaults
+	if cfg.Watcher.PollIntervalS == 0 {
+		cfg.Watcher.PollIntervalS = 30
+	}
+	if cfg.Watcher.MaxCIRetries == 0 {
+		cfg.Watcher.MaxCIRetries = 3
+	}
+
 	return &cfg, nil
 }
 
@@ -222,6 +238,12 @@ func defaultConfig() *Config {
 			Port:      7777,
 			RefreshMs: 500,
 		},
+		Watcher: WatcherConfig{
+			Enabled:       true,
+			PollIntervalS: 30,
+			MaxCIRetries:  3,
+			AutoCleanup:   true,
+		},
 	}
 }
 
@@ -234,6 +256,53 @@ func TspDir() string {
 // ConfigPath returns the default config file path (~/.tsp/config.yaml).
 func ConfigPath() string {
 	return filepath.Join(TspDir(), "config.yaml")
+}
+
+// Repair compares a config against defaults and fills in missing fields.
+// Returns the list of changes made and the updated config.
+func Repair(cfg *Config) ([]string, *Config) {
+	defaults := defaultConfig()
+	var changes []string
+
+	if len(cfg.Dash.ErrorPatterns) == 0 {
+		cfg.Dash.ErrorPatterns = defaults.Dash.ErrorPatterns
+		changes = append(changes, "dash.error_patterns: set to defaults")
+	}
+	if cfg.Dash.PromptPattern == "" {
+		cfg.Dash.PromptPattern = defaults.Dash.PromptPattern
+		changes = append(changes, "dash.prompt_pattern: set to default")
+	}
+	if len(cfg.Dash.InputPatterns) == 0 {
+		cfg.Dash.InputPatterns = defaults.Dash.InputPatterns
+		changes = append(changes, "dash.input_patterns: set to defaults")
+	}
+	if cfg.Dash.RefreshMs == 0 {
+		cfg.Dash.RefreshMs = defaults.Dash.RefreshMs
+		changes = append(changes, "dash.refresh_ms: set to 500")
+	}
+	if cfg.Spawn.AgentCommand == "" {
+		cfg.Spawn.AgentCommand = defaults.Spawn.AgentCommand
+		changes = append(changes, "spawn.agent_command: set to default")
+	}
+	if cfg.Spawn.WorktreeBase == "" {
+		cfg.Spawn.WorktreeBase = defaults.Spawn.WorktreeBase
+		changes = append(changes, "spawn.worktree_base: set to default")
+	}
+	if cfg.Serve.Port == 0 {
+		cfg.Serve.Port = defaults.Serve.Port
+		changes = append(changes, "serve.port: set to 7777")
+	}
+	if cfg.Serve.RefreshMs == 0 {
+		cfg.Serve.RefreshMs = defaults.Serve.RefreshMs
+		changes = append(changes, "serve.refresh_ms: set to default")
+	}
+	// Watcher section (new)
+	if cfg.Watcher.PollIntervalS == 0 {
+		cfg.Watcher = defaults.Watcher
+		changes = append(changes, "watcher: added with defaults (enabled, 30s poll, 3 retries, auto-cleanup)")
+	}
+
+	return changes, cfg
 }
 
 // oldConfigPath returns the legacy config file path (~/.tmux-super-powers.yaml).

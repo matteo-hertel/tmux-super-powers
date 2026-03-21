@@ -44,3 +44,46 @@ var configCmd = &cobra.Command{
 		}
 	},
 }
+
+var configRepairCmd = &cobra.Command{
+	Use:   "repair",
+	Short: "Detect and fill missing config fields with defaults",
+	Run: func(cmd *cobra.Command, args []string) {
+		configPath := config.ConfigPath()
+
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Consider backing up and resetting: cp %s %s.bak\n", configPath, configPath)
+			os.Exit(1)
+		}
+
+		changes, updated := config.Repair(cfg)
+
+		if len(changes) == 0 {
+			fmt.Println("Config is up to date. No changes needed.")
+			return
+		}
+
+		// Backup
+		bakPath := configPath + ".bak"
+		if data, err := os.ReadFile(configPath); err == nil {
+			os.WriteFile(bakPath, data, 0644)
+			fmt.Printf("Backup saved to %s\n", bakPath)
+		}
+
+		if err := config.Save(updated); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Config updated (%d changes):\n", len(changes))
+		for _, c := range changes {
+			fmt.Printf("  + %s\n", c)
+		}
+	},
+}
+
+func init() {
+	configCmd.AddCommand(configRepairCmd)
+}
