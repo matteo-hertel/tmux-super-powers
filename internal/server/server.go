@@ -26,6 +26,7 @@ var indexHTML []byte
 // Server is the HTTP/WebSocket API server.
 type Server struct {
 	cfg            *config.Config
+	bus            *service.Bus
 	monitor        *service.Monitor
 	notifier       *service.Notifier
 	upgrader       websocket.Upgrader
@@ -50,13 +51,16 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 	pairing := device.NewPairingManager(5 * time.Minute)
 	authMiddleware := auth.NewMiddleware(adminToken, deviceStore)
 
+	bus := service.NewBus()
 	srv := &Server{
 		cfg: cfg,
+		bus: bus,
 		monitor: service.NewMonitor(
 			cfg.Serve.RefreshMs,
 			cfg.Dash.ErrorPatterns,
 			cfg.Dash.PromptPattern,
 			cfg.Dash.InputPatterns,
+			bus,
 		),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },

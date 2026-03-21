@@ -13,18 +13,20 @@ type Monitor struct {
 	errorPatterns []string
 	promptPattern string
 	inputPatterns []string
-	subscribers   []chan []Session
+	subscribers   []chan []Session // kept during migration
 	subMu         sync.Mutex
 	stopCh        chan struct{}
+	bus           *Bus
 }
 
-func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string, inputPatterns []string) *Monitor {
+func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string, inputPatterns []string, bus *Bus) *Monitor {
 	return &Monitor{
 		refreshMs:     refreshMs,
 		errorPatterns: errorPatterns,
 		promptPattern: promptPattern,
 		inputPatterns: inputPatterns,
 		stopCh:        make(chan struct{}),
+		bus:           bus,
 	}
 }
 
@@ -177,9 +179,57 @@ func (m *Monitor) poll() {
 		}
 		updated = append(updated, s)
 	}
+	// Collect events to publish AFTER releasing the lock (prevents deadlock
+	// since event handlers may call FindSession/Snapshot which need RLock).
+	var events []Event
+	prevNames := make(map[string]bool)
+	for name := range existing {
+		prevNames[name] = true
+	}
+	for _, s := range updated {
+		if !prevNames[s.Name] {
+			events = append(events, SessionCreatedEvent{Name: s.Name})
+		}
+		if prev, ok := existing[s.Name]; ok {
+			if prev.Status != s.Status {
+				events = append(events, StatusChangedEvent{Session: s.Name, From: prev.Status, To: s.Status})
+			}
+			if s.Status == "waiting" {
+				for _, p := range s.Panes {
+					if p.Status == "waiting" {
+						events = append(events, AgentWaitingEvent{Session: s.Name, PaneIndex: p.Index, Prompt: p.Prompt})
+					}
+				}
+			}
+			// Detect agent crash: pane was agent, now shell
+			for _, p := range s.Panes {
+				for _, pp := range prev.Panes {
+					if pp.Index == p.Index && pp.Type == "agent" && p.Type == "shell" {
+						events = append(events, AgentCrashedEvent{Session: s.Name, PaneIndex: p.Index, PrevProcess: pp.Process})
+					}
+				}
+			}
+		}
+	}
+	// Detect removed sessions
+	currentNames := make(map[string]bool)
+	for _, s := range updated {
+		currentNames[s.Name] = true
+	}
+	for name := range existing {
+		if !currentNames[name] {
+			events = append(events, SessionRemovedEvent{Name: name})
+		}
+	}
+
 	m.sessions = updated
 	m.mu.Unlock()
-	m.notify()
+	m.notify() // keep channel notify during migration
+
+	// Publish events outside the lock
+	for _, e := range events {
+		m.bus.Publish(e)
+	}
 }
 
 func (m *Monitor) notify() {
