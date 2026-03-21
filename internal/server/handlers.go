@@ -592,22 +592,21 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine session directory for JSONL discovery.
-	// Prefer the agent pane's cwd over session.Dir — when multiple sessions
-	// share the same editor cwd, using pane 0's cwd returns the wrong JSONL.
-	dir := ""
-	agentPanePrompt := ""
-	for _, p := range session.Panes {
-		if p.Type == "agent" {
-			dir = service.GetAgentPaneCwd(session.Name, p.Index)
-			agentPanePrompt = service.GetAgentPanePrompt(session.Name, p.Index)
-			break
-		}
-	}
-	if dir == "" {
-		dir = session.Dir
-	}
+	dir := session.Dir
 	if session.WorktreePath != "" {
 		dir = session.WorktreePath
+	}
+	// Try agent pane's cwd as a more specific directory
+	agentSessionID := ""
+	for _, p := range session.Panes {
+		if p.Type == "agent" {
+			if paneCwd := service.GetAgentPaneCwd(session.Name, p.Index); paneCwd != "" {
+				dir = paneCwd
+			}
+			// Resolve the exact JSONL session by tracing the claude process's open files
+			agentSessionID = service.GetAgentSessionID(session.Name, p.Index)
+			break
+		}
 	}
 	if dir == "" {
 		writeError(w, http.StatusNotFound, "session directory unknown")
@@ -617,7 +616,7 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 	// List all available agent sessions
 	allSessions, _ := agentlog.FindAllJSONL(dir)
 
-	// Pick JSONL file: ?session=<id> or default to best match
+	// Pick JSONL file: ?session=<id>, or resolved from process, or most recent
 	var jsonlPath string
 	if sessionID := r.URL.Query().Get("session"); sessionID != "" {
 		for _, as := range allSessions {
@@ -630,10 +629,26 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "agent session not found")
 			return
 		}
+	} else if agentSessionID != "" {
+		// Use the session ID resolved from the running claude process
+		for _, as := range allSessions {
+			if as.ID == agentSessionID {
+				jsonlPath = as.Path
+				break
+			}
+		}
+		if jsonlPath == "" {
+			// Session ID found but JSONL doesn't exist yet — fall back
+			var err error
+			jsonlPath, err = agentlog.FindJSONL(dir)
+			if err != nil {
+				writeError(w, http.StatusNotFound, "no agent log found")
+				return
+			}
+		}
 	} else {
-		// Try to match by prompt when multiple sessions share the same directory
 		var err error
-		jsonlPath, err = agentlog.FindJSONLByPrompt(dir, agentPanePrompt)
+		jsonlPath, err = agentlog.FindJSONL(dir)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "no agent log found")
 			return

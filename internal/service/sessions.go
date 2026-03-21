@@ -123,42 +123,86 @@ func GetAgentPaneCwd(session string, pane int) string {
 	return tmuxpkg.GetPaneCwdByIndex(session, pane)
 }
 
-// GetAgentPanePrompt extracts the initial prompt from a pane's start command.
-// When Claude Code is spawned with a task argument (e.g. `claude --flags "do X"`),
-// the start command contains the prompt. Returns "" if not available.
-func GetAgentPanePrompt(session string, pane int) string {
+// GetAgentSessionID resolves the Claude Code JSONL session UUID for a tmux pane
+// by tracing the process tree and checking open file descriptors via lsof.
+// Claude Code keeps ~/.claude/tasks/<session-uuid>/ open while running.
+// Returns "" if the session ID cannot be determined.
+func GetAgentSessionID(session string, pane int) string {
 	target := fmt.Sprintf("%s:0.%d", session, pane)
-	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_start_command}")
-	out, err := cmd.Output()
+	// Step 1: Get pane PID
+	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidOut, err := pidCmd.Output()
 	if err != nil {
 		return ""
 	}
-	startCmd := strings.TrimSpace(string(out))
-	if startCmd == "" {
+	panePid := strings.TrimSpace(string(pidOut))
+	if panePid == "" {
 		return ""
 	}
-	// The command looks like: claude --dangerously-skip-permissions "prompt text"
-	// or: claude --flags 'prompt text'
-	// Extract text after the last known flag before the prompt argument.
-	// Look for the prompt after --dangerously-skip-permissions or similar flags.
-	markers := []string{"--dangerously-skip-permissions", "-p"}
-	for _, marker := range markers {
-		if idx := strings.Index(startCmd, marker); idx >= 0 {
-			rest := strings.TrimSpace(startCmd[idx+len(marker):])
-			// Strip surrounding quotes and escaped quotes
-			rest = strings.TrimPrefix(rest, "\"")
-			rest = strings.TrimPrefix(rest, "'")
-			rest = strings.ReplaceAll(rest, "\\\"", "")
-			// Trim trailing quote/semicolon/command chains
-			for _, suffix := range []string{"\";", "';", "\""} {
-				if end := strings.Index(rest, suffix); end >= 0 {
-					rest = rest[:end]
-				}
+
+	// Step 2: Find the claude process (may be the pane itself or a child)
+	claudePid := findClaudePid(panePid)
+	if claudePid == "" {
+		return ""
+	}
+
+	// Step 3: Extract session UUID from lsof — claude keeps ~/.claude/tasks/<uuid>/ open
+	lsofCmd := exec.Command("lsof", "-p", claudePid)
+	lsofOut, err := lsofCmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(lsofOut), "\n") {
+		if strings.Contains(line, ".claude/tasks/") {
+			// Extract the UUID directory name
+			idx := strings.Index(line, ".claude/tasks/")
+			if idx < 0 {
+				continue
+			}
+			rest := line[idx+len(".claude/tasks/"):]
+			// UUID is up to the next / or end of field
+			if slashIdx := strings.IndexByte(rest, '/'); slashIdx > 0 {
+				rest = rest[:slashIdx]
 			}
 			rest = strings.TrimSpace(rest)
-			if rest != "" {
+			if rest != "" && len(rest) > 8 { // sanity check: UUID-like
 				return rest
 			}
+		}
+	}
+	return ""
+}
+
+// findClaudePid finds the claude process PID from a shell PID by checking children.
+func findClaudePid(shellPid string) string {
+	// Check if the shell itself is claude
+	commCmd := exec.Command("ps", "-p", shellPid, "-o", "comm=")
+	commOut, err := commCmd.Output()
+	if err == nil {
+		comm := strings.TrimSpace(string(commOut))
+		if comm == "claude" || isClaudeVersion(comm) {
+			return shellPid
+		}
+	}
+	// Check children
+	pgrepCmd := exec.Command("pgrep", "-P", shellPid)
+	pgrepOut, err := pgrepCmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		commCmd := exec.Command("ps", "-p", pid, "-o", "comm=")
+		commOut, err := commCmd.Output()
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(commOut))
+		if comm == "claude" || isClaudeVersion(comm) {
+			return pid
 		}
 	}
 	return ""
