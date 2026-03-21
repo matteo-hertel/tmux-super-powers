@@ -152,6 +152,15 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Auto-track spawned sessions for lifecycle automation
+	if s.watcher != nil {
+		for _, r := range results {
+			if r.Status == "ok" {
+				s.watcher.Track(r.Session, r.Branch, r.WorktreePath, r.GitPath)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"results": results})
 }
 

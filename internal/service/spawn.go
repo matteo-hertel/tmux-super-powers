@@ -63,11 +63,13 @@ func TaskToBranch(task string) string {
 
 // SpawnResult holds the result of spawning a single agent.
 type SpawnResult struct {
-	Task    string `json:"task"`
-	Branch  string `json:"branch"`
-	Session string `json:"session"`
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
+	Task         string `json:"task"`
+	Branch       string `json:"branch"`
+	Session      string `json:"session"`
+	Status       string `json:"status"`
+	Error        string `json:"error,omitempty"`
+	WorktreePath string `json:"worktreePath,omitempty"`
+	GitPath      string `json:"gitPath,omitempty"`
 }
 
 // SpawnAgents deploys agents with tasks into worktrees.
@@ -103,7 +105,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branchShort))
 		worktreePath := filepath.Join(worktreeBase, fmt.Sprintf("%s-%s", repoName, branchShort))
 
-		result := SpawnResult{Task: task, Branch: branch, Session: sessionName}
+		result := SpawnResult{Task: task, Branch: branch, Session: sessionName, WorktreePath: worktreePath, GitPath: repoRoot}
 
 		if !spawnBranchExists(repoRoot, branch) {
 			if err := spawnCreateBranch(repoRoot, branch, baseBranch); err != nil {
