@@ -231,14 +231,7 @@ func removeSelectedWorktrees(worktrees []Worktree, selected map[int]bool) {
 				tmuxpkg.KillSession(sessionName)
 			}
 
-			if _, err := os.Stat(wt.Path); err == nil {
-				out.WriteString(fmt.Sprintf("  Removing directory '%s'...\n", wt.Path))
-				if err := os.RemoveAll(wt.Path); err != nil {
-					out.WriteString(fmt.Sprintf("  Warning: Failed to remove directory: %v\n", err))
-				} else {
-					out.WriteString("  Directory removed successfully.\n")
-				}
-			}
+			// Directory removal handled by git worktree remove in phase 2
 
 			cleanupEmptyParentsCollect(wt.Path, &out)
 			results[idx] = out.String()

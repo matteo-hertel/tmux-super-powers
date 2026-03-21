@@ -429,8 +429,10 @@ func (m *dashModel) mergeBranch() {
 			return
 		}
 		tmuxpkg.KillSession(s.name)
-		exec.Command("git", "worktree", "remove", s.worktreePath, "--force").Run()
-		exec.Command("git", "branch", "-D", s.branch).Run()
+		if err := exec.Command("git", "-C", s.gitPath, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
+			exec.Command("git", "-C", s.gitPath, "worktree", "prune").Run()
+		}
+		exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
 		m.removeSession(m.cursor)
 		m.statusMsg = fmt.Sprintf("Merged and cleaned up %s", s.branch)
 	} else {
@@ -464,10 +466,17 @@ func (m *dashModel) discardWorktree() {
 	}
 	s := m.sessions[m.cursor]
 	tmuxpkg.KillSession(s.name)
-	if s.isWorktree {
-		os.RemoveAll(s.worktreePath)
-		exec.Command("git", "worktree", "remove", s.worktreePath, "--force").Run()
-		exec.Command("git", "branch", "-D", s.branch).Run()
+	if s.isWorktree && s.worktreePath != "" {
+		if err := exec.Command("git", "-C", s.gitPath, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
+			// If git worktree remove fails (e.g. dir already gone), fall back to prune
+			exec.Command("git", "-C", s.gitPath, "worktree", "prune").Run()
+		}
+		if err := exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run(); err != nil {
+			m.statusMsg = fmt.Sprintf("Removed %s (branch delete failed: %v)", s.name, err)
+			m.mode = dashStatusMessage
+			m.removeSession(m.cursor)
+			return
+		}
 	}
 	m.removeSession(m.cursor)
 	m.statusMsg = fmt.Sprintf("Removed %s", s.name)
