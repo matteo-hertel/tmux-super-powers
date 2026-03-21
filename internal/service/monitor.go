@@ -209,6 +209,17 @@ func (m *Monitor) poll() {
 					}
 				}
 			}
+			// Detect agent stuck: agent pane unchanged for >5 minutes while session is "idle"
+			if s.Status == "idle" {
+				idleDuration := now.Sub(s.LastChanged)
+				if idleDuration > 5*time.Minute {
+					for _, p := range s.Panes {
+						if p.Type == "agent" {
+							events = append(events, AgentStuckEvent{Session: s.Name, PaneIndex: p.Index, IdleDuration: idleDuration})
+						}
+					}
+				}
+			}
 		}
 	}
 	// Detect removed sessions

@@ -626,8 +626,14 @@ func (m dashModel) View() string {
 		return m.viewHelp()
 	}
 
-	leftWidth := m.width * 35 / 100
+	leftWidth := m.width * 40 / 100
 	rightWidth := m.width - leftWidth - 3
+
+	// Title bar
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("212")).
+		Render("  tsp dash — Mission Control")
 
 	// Left panel: session list
 	now := time.Now()
@@ -636,13 +642,28 @@ func (m dashModel) View() string {
 		icon := statusIcon(s.status)
 		timeSince := formatTimeSince(s.lastChanged, now)
 
-		label := truncate(s.name, 20)
+		nameWidth := leftWidth - 16
+		if nameWidth < 10 {
+			nameWidth = 10
+		}
+		label := truncate(s.name, nameWidth)
+
 		extra := timeSince
 		if s.isGitRepo && s.diffLoaded && s.filesChanged > 0 {
 			extra = fmt.Sprintf("+%d/-%d %s", s.insertions, s.deletions, timeSince)
 		}
+		if s.prNumber > 0 {
+			ciIcon := "…"
+			switch s.ciStatus {
+			case "pass":
+				ciIcon = "✓"
+			case "fail":
+				ciIcon = "✗"
+			}
+			extra = fmt.Sprintf("#%d %s %s", s.prNumber, ciIcon, timeSince)
+		}
 
-		line := fmt.Sprintf(" %s %-20s %s", icon, label, extra)
+		line := fmt.Sprintf(" %s %-*s %s", icon, nameWidth, label, extra)
 
 		if i == m.cursor {
 			style := lipgloss.NewStyle().
@@ -657,43 +678,50 @@ func (m dashModel) View() string {
 		}
 	}
 
+	panelHeight := m.height - 6 // room for title + legend + modal
 	leftPanel := lipgloss.NewStyle().
 		Width(leftWidth).
-		Height(m.height - 4).
+		Height(panelHeight).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
-		Padding(1).
+		Padding(0, 1).
 		Render(strings.Join(sessionLines, "\n"))
 
-	// Right panel: content depends on view mode
-	var rightContent string
-	switch m.view {
-	case dashViewDiff:
-		rightContent = m.viewDiffPanel()
-	default:
-		rightContent = m.viewLivePanel()
-	}
-
+	// Right panel: session detail + actions
+	rightContent := m.viewDetailPanel(rightWidth, panelHeight)
 	rightPanel := lipgloss.NewStyle().
 		Width(rightWidth).
-		Height(m.height - 4).
+		Height(panelHeight).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(0, 1).
 		Render(rightContent)
 
-	// Title bar
-	viewLabel := "LIVE"
-	if m.view == dashViewDiff {
-		viewLabel = "DIFF"
-	}
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("212")).
-		Render(fmt.Sprintf("  Dashboard [%s] — ? for help | d: toggle view | q: quit", viewLabel))
-
 	layout := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
-	result := fmt.Sprintf("%s\n%s", title, layout)
+
+	// Legend bar
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	sep := dim.Render(" │ ")
+
+	legend := "  " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("●") + " active " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("◌") + " idle " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("✓") + " done " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("✗") + " error " +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("?") + " waiting" +
+		sep +
+		key.Render("↑↓") + " nav " +
+		key.Render("⏎") + " attach " +
+		key.Render("d") + " diff " +
+		key.Render("x") + " kill " +
+		key.Render("p") + " pr " +
+		key.Render("f") + " fix-ci " +
+		key.Render("r") + " reviews " +
+		key.Render("m") + " merge " +
+		key.Render("?") + " help"
+
+	result := fmt.Sprintf("%s\n%s\n%s", title, layout, legend)
 
 	// Modal overlays
 	switch m.mode {
@@ -720,42 +748,143 @@ func (m dashModel) View() string {
 	return result
 }
 
-func (m dashModel) viewLivePanel() string {
-	if len(m.sessions) == 0 || m.cursor >= len(m.sessions) {
-		return "No sessions"
-	}
-	content := m.sessions[m.cursor].paneContent
-	if content == "" {
-		content = "No content"
-	}
-	lines := strings.Split(content, "\n")
-	maxLines := m.height - 6
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m dashModel) viewDiffPanel() string {
+func (m dashModel) viewDetailPanel(width, height int) string {
 	if len(m.sessions) == 0 || m.cursor >= len(m.sessions) {
 		return "No sessions"
 	}
 	s := m.sessions[m.cursor]
-	if !s.isGitRepo {
-		return "(not a git repo — no diff available)"
+
+	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	val := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+
+	var lines []string
+
+	// Session header
+	lines = append(lines, bold.Render(s.name))
+	lines = append(lines, "")
+
+	// Status
+	statusColor := dashStatusColor(s.status)
+	lines = append(lines, fmt.Sprintf("  %s %s  %s",
+		dim.Render("Status:"),
+		lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(statusIcon(s.status)+" "+s.status),
+		dim.Render(formatTimeSince(s.lastChanged, time.Now())),
+	))
+
+	// Git info
+	if s.isGitRepo {
+		lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("Branch:"), val.Render(s.branch)))
+		if s.isWorktree {
+			lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("  Type:"), val.Render("worktree")))
+		}
+		if s.diffLoaded && s.filesChanged > 0 {
+			lines = append(lines, fmt.Sprintf("  %s %s",
+				dim.Render("  Diff:"),
+				val.Render(fmt.Sprintf("%d files, +%d/-%d", s.filesChanged, s.insertions, s.deletions)),
+			))
+		}
+	} else {
+		lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("   Git:"), dim.Render("not a git repo")))
 	}
-	if !s.diffLoaded {
-		return "(loading diff...)"
+
+	// PR info
+	if s.prNumber > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  %s #%d", dim.Render("    PR:"), s.prNumber))
+		ciLabel := s.ciStatus
+		ciColor := lipgloss.Color("245")
+		switch s.ciStatus {
+		case "pass":
+			ciLabel = "✓ passing"
+			ciColor = lipgloss.Color("82")
+		case "fail":
+			ciLabel = "✗ failing"
+			ciColor = lipgloss.Color("196")
+		case "pending":
+			ciLabel = "… pending"
+			ciColor = lipgloss.Color("226")
+		}
+		lines = append(lines, fmt.Sprintf("  %s %s",
+			dim.Render("    CI:"),
+			lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel),
+		))
+		if s.reviewCount > 0 {
+			lines = append(lines, fmt.Sprintf("  %s %s",
+				dim.Render("Reviews:"),
+				val.Render(fmt.Sprintf("%d comments", s.reviewCount)),
+			))
+		}
 	}
-	content := s.diffOutput
-	if content == "" {
-		content = "(no changes)"
+
+	// Loading indicator
+	if m.statusMsg != "" && m.mode == dashStatusMessage {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(fmt.Sprintf("  ⟳ %s", m.statusMsg)))
 	}
-	lines := strings.Split(content, "\n")
-	maxLines := m.height - 6
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
+
+	// Actions section
+	lines = append(lines, "")
+	lines = append(lines, bold.Render("Actions"))
+
+	actionDim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	actionKey := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+
+	lines = append(lines, fmt.Sprintf("  %s attach   %s send prompt", actionKey.Render("⏎"), actionKey.Render("c")))
+	lines = append(lines, fmt.Sprintf("  %s kill     %s toggle diff", actionKey.Render("x"), actionKey.Render("d")))
+	if s.isGitRepo {
+		lines = append(lines, fmt.Sprintf("  %s create PR", actionKey.Render("p")))
+		if s.prNumber > 0 {
+			lines = append(lines, fmt.Sprintf("  %s fix CI   %s address reviews", actionKey.Render("f"), actionKey.Render("r")))
+			lines = append(lines, fmt.Sprintf("  %s merge    %s cleanup merged", actionKey.Render("m"), actionKey.Render("W")))
+		} else {
+			lines = append(lines, actionDim.Render("  (create PR to unlock CI/review/merge actions)"))
+		}
 	}
+
+	// If diff view is active, show diff content below actions
+	if m.view == dashViewDiff {
+		lines = append(lines, "")
+		lines = append(lines, bold.Render("Diff"))
+		if !s.isGitRepo {
+			lines = append(lines, dim.Render("  (not a git repo)"))
+		} else if !s.diffLoaded {
+			lines = append(lines, dim.Render("  (loading...)"))
+		} else if s.diffOutput == "" {
+			lines = append(lines, dim.Render("  (no changes)"))
+		} else {
+			diffLines := strings.Split(s.diffOutput, "\n")
+			maxDiff := height - len(lines) - 2
+			if maxDiff > 0 && len(diffLines) > maxDiff {
+				diffLines = diffLines[:maxDiff]
+			}
+			for _, dl := range diffLines {
+				if strings.HasPrefix(dl, "+") {
+					lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("  "+dl))
+				} else if strings.HasPrefix(dl, "-") {
+					lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  "+dl))
+				} else {
+					lines = append(lines, dim.Render("  "+dl))
+				}
+			}
+		}
+	} else {
+		// Live pane preview (compact, last N lines)
+		lines = append(lines, "")
+		lines = append(lines, bold.Render("Live"))
+		content := s.paneContent
+		if content == "" {
+			lines = append(lines, dim.Render("  (no content)"))
+		} else {
+			paneLines := strings.Split(content, "\n")
+			maxPane := height - len(lines) - 2
+			if maxPane > 0 && len(paneLines) > maxPane {
+				paneLines = paneLines[len(paneLines)-maxPane:]
+			}
+			lines = append(lines, paneLines...)
+		}
+	}
+
 	return strings.Join(lines, "\n")
 }
 

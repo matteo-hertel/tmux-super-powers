@@ -10,223 +10,214 @@ import (
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 )
 
-// Notifier watches session state changes and sends push notifications.
+// Notifier watches session state changes via the event bus and sends push notifications.
 type Notifier struct {
 	monitor     *Monitor
 	deviceStore *device.Store
 	push        *PushClient
+	bus         *Bus
 
-	mu   sync.Mutex
-	prev map[string]sessionSnapshot
+	mu sync.Mutex
 	// lastNotified tracks the last status we sent a push notification for,
 	// per session. We only send a new notification when the status changes to
 	// something DIFFERENT from what we last notified. This prevents spam when
 	// status flickers (e.g. done → active → done due to terminal content jitter).
-	// Cleared only when the session is removed.
 	lastNotified   map[string]string // session name → last notified status
 	lastCINotified map[string]string // session name → last notified CI status
 
+	unsub  UnsubscribeFunc
 	stopCh chan struct{}
 }
 
-type sessionSnapshot struct {
-	Status   string
-	CIStatus string
-}
-
-// NewNotifier creates a notifier that watches the given monitor.
-func NewNotifier(monitor *Monitor, deviceStore *device.Store) *Notifier {
+// NewNotifier creates a notifier that watches the given monitor via the event bus.
+func NewNotifier(monitor *Monitor, deviceStore *device.Store, bus *Bus) *Notifier {
 	return &Notifier{
 		monitor:        monitor,
 		deviceStore:    deviceStore,
 		push:           NewPushClient(),
-		prev:           make(map[string]sessionSnapshot),
+		bus:            bus,
 		lastNotified:   make(map[string]string),
 		lastCINotified: make(map[string]string),
 		stopCh:         make(chan struct{}),
 	}
 }
 
-// Start begins watching for session state changes.
+// Start begins watching for events.
 func (n *Notifier) Start() {
-	go n.loop()
+	n.unsub = n.bus.Subscribe(func(e Event) {
+		n.handleEvent(e)
+	})
 }
 
 // Stop stops the notifier.
 func (n *Notifier) Stop() {
-	close(n.stopCh)
-}
-
-func (n *Notifier) loop() {
-	ch := n.monitor.Subscribe()
-	defer n.monitor.Unsubscribe(ch)
-
-	for {
-		select {
-		case sessions, ok := <-ch:
-			if !ok {
-				return
-			}
-			n.check(sessions)
-		case <-n.stopCh:
-			return
-		}
+	if n.unsub != nil {
+		n.unsub()
+	}
+	select {
+	case <-n.stopCh:
+	default:
+		close(n.stopCh)
 	}
 }
 
-func (n *Notifier) check(sessions []Session) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+func (n *Notifier) handleEvent(e Event) {
+	switch ev := e.(type) {
+	case StatusChangedEvent:
+		n.onStatusChanged(ev)
+	case AgentWaitingEvent:
+		n.onAgentWaiting(ev)
+	case CIStatusChangedEvent:
+		n.onCIStatusChanged(ev)
+	case SessionRemovedEvent:
+		n.mu.Lock()
+		delete(n.lastNotified, ev.Name)
+		delete(n.lastCINotified, ev.Name)
+		n.mu.Unlock()
+	}
+}
 
+func (n *Notifier) onStatusChanged(ev StatusChangedEvent) {
 	tokens := n.deviceStore.PushTokens()
 	if len(tokens) == 0 {
-		for _, s := range sessions {
-			ci := ""
-			if s.PR != nil {
-				ci = s.PR.CIStatus
-			}
-			n.prev[s.Name] = sessionSnapshot{Status: s.Status, CIStatus: ci}
-		}
 		return
 	}
 
-	var messages []PushMessage
-
-	for _, s := range sessions {
-		ci := ""
-		if s.PR != nil {
-			ci = s.PR.CIStatus
-		}
-		snap := sessionSnapshot{Status: s.Status, CIStatus: ci}
-
-		prev, existed := n.prev[s.Name]
-		n.prev[s.Name] = snap
-
-		if !existed {
-			continue
-		}
-
-		if prev.Status != s.Status {
-			// Skip notification if user is attached to this tmux session.
-			if sessionHasAttachedClient(s.Name) {
-				continue
-			}
-			msg := n.statusMessage(s, prev.Status)
-			if msg != nil {
-				// Only notify if this is a DIFFERENT status from what we last
-				// notified. This prevents spam from status flickering
-				// (done → active → done would not re-notify).
-				if n.lastNotified[s.Name] == s.Status {
-					continue
-				}
-				n.lastNotified[s.Name] = s.Status
-				for _, token := range tokens {
-					m := *msg
-					m.To = token
-					messages = append(messages, m)
-				}
-			}
-		}
-
-		if prev.CIStatus != "fail" && ci == "fail" {
-			if n.lastCINotified[s.Name] == "fail" {
-				continue
-			}
-			n.lastCINotified[s.Name] = "fail"
-			pr := s.PR
-			for _, token := range tokens {
-				messages = append(messages, PushMessage{
-					To:         token,
-					Title:      fmt.Sprintf("CI failing: %s", s.Name),
-					Body:       fmt.Sprintf("PR #%d checks failing", pr.Number),
-					Sound:      "default",
-					Priority:   "high",
-					CategoryID: "error",
-					Data: map[string]string{
-						"type":        "ci_fail",
-						"sessionName": s.Name,
-					},
-				})
-			}
-		}
-
-		// When CI recovers, clear so a future failure can re-notify.
-		if prev.CIStatus == "fail" && ci != "fail" {
-			delete(n.lastCINotified, s.Name)
-		}
+	// Skip if user is attached to this session
+	if sessionHasAttachedClient(ev.Session) {
+		return
 	}
 
-	// Clean up entries for removed sessions.
-	current := make(map[string]bool)
-	for _, s := range sessions {
-		current[s.Name] = true
-	}
-	for name := range n.prev {
-		if !current[name] {
-			delete(n.prev, name)
-			delete(n.lastNotified, name)
-			delete(n.lastCINotified, name)
-		}
-	}
+	var msg *PushMessage
 
-	if len(messages) > 0 {
-		go func() {
-			if err := n.push.Send(messages); err != nil {
-				log.Printf("push notification error: %v", err)
-			}
-		}()
-	}
-}
-
-func (n *Notifier) statusMessage(s Session, prevStatus string) *PushMessage {
-	switch s.Status {
+	switch ev.To {
 	case "done":
-		if prevStatus != "active" && prevStatus != "idle" && prevStatus != "waiting" && prevStatus != "error" {
-			return nil
+		if ev.From != "active" && ev.From != "idle" && ev.From != "waiting" && ev.From != "error" {
+			return
 		}
+		s := n.monitor.FindSession(ev.Session)
 		body := "Session completed"
-		if s.Diff != nil {
+		if s != nil && s.Diff != nil {
 			body = fmt.Sprintf("%d files changed, +%d/-%d", s.Diff.Files, s.Diff.Insertions, s.Diff.Deletions)
 		}
-		return &PushMessage{
-			Title:      fmt.Sprintf("Agent finished: %s", s.Name),
+		msg = &PushMessage{
+			Title:      fmt.Sprintf("Agent finished: %s", ev.Session),
 			Body:       body,
 			Sound:      "default",
 			CategoryID: "done",
 			Data: map[string]string{
 				"type":        "status_change",
-				"sessionName": s.Name,
+				"sessionName": ev.Session,
 				"status":      "done",
 			},
 		}
+	}
 
-	case "waiting":
-		body := "Agent needs your input"
-		for _, pane := range s.Panes {
-			if pane.Prompt != "" {
-				body = pane.Prompt
-				if len(body) > 150 {
-					body = body[:150]
-				}
-				break
-			}
+	if msg == nil {
+		return
+	}
+
+	n.mu.Lock()
+	if n.lastNotified[ev.Session] == ev.To {
+		n.mu.Unlock()
+		return
+	}
+	n.lastNotified[ev.Session] = ev.To
+	n.mu.Unlock()
+
+	n.sendToAll(tokens, msg)
+}
+
+func (n *Notifier) onAgentWaiting(ev AgentWaitingEvent) {
+	tokens := n.deviceStore.PushTokens()
+	if len(tokens) == 0 {
+		return
+	}
+	if sessionHasAttachedClient(ev.Session) {
+		return
+	}
+
+	body := "Agent needs your input"
+	if ev.Prompt != "" {
+		body = ev.Prompt
+		if len(body) > 150 {
+			body = body[:150]
 		}
-		return &PushMessage{
-			Title:      fmt.Sprintf("Input needed: %s", s.Name),
-			Body:       body,
+	}
+
+	n.mu.Lock()
+	if n.lastNotified[ev.Session] == "waiting" {
+		n.mu.Unlock()
+		return
+	}
+	n.lastNotified[ev.Session] = "waiting"
+	n.mu.Unlock()
+
+	msg := &PushMessage{
+		Title:      fmt.Sprintf("Input needed: %s", ev.Session),
+		Body:       body,
+		Sound:      "default",
+		Priority:   "high",
+		CategoryID: "waiting",
+		Data: map[string]string{
+			"type":        "status_change",
+			"sessionName": ev.Session,
+			"status":      "waiting",
+		},
+	}
+	n.sendToAll(tokens, msg)
+}
+
+func (n *Notifier) onCIStatusChanged(ev CIStatusChangedEvent) {
+	tokens := n.deviceStore.PushTokens()
+	if len(tokens) == 0 {
+		return
+	}
+
+	if ev.To == "fail" {
+		n.mu.Lock()
+		if n.lastCINotified[ev.Session] == "fail" {
+			n.mu.Unlock()
+			return
+		}
+		n.lastCINotified[ev.Session] = "fail"
+		n.mu.Unlock()
+
+		msg := &PushMessage{
+			To:         "",
+			Title:      fmt.Sprintf("CI failing: %s", ev.Session),
+			Body:       fmt.Sprintf("PR #%d checks failing", ev.PRNumber),
 			Sound:      "default",
 			Priority:   "high",
-			CategoryID: "waiting",
+			CategoryID: "error",
 			Data: map[string]string{
-				"type":        "status_change",
-				"sessionName": s.Name,
-				"status":      "waiting",
+				"type":        "ci_fail",
+				"sessionName": ev.Session,
 			},
 		}
-
-	default:
-		return nil
+		n.sendToAll(tokens, msg)
 	}
+
+	// When CI recovers, clear so a future failure can re-notify.
+	if ev.From == "fail" && ev.To != "fail" {
+		n.mu.Lock()
+		delete(n.lastCINotified, ev.Session)
+		n.mu.Unlock()
+	}
+}
+
+func (n *Notifier) sendToAll(tokens []string, msg *PushMessage) {
+	var messages []PushMessage
+	for _, token := range tokens {
+		m := *msg
+		m.To = token
+		messages = append(messages, m)
+	}
+	go func() {
+		if err := n.push.Send(messages); err != nil {
+			log.Printf("push notification error: %v", err)
+		}
+	}()
 }
 
 // sessionHasAttachedClient returns true if any tmux client is attached to the session.
