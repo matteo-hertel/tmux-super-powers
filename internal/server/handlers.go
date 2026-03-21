@@ -591,8 +591,21 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine session directory for JSONL discovery
-	dir := session.Dir
+	// Determine session directory for JSONL discovery.
+	// Prefer the agent pane's cwd over session.Dir — when multiple sessions
+	// share the same editor cwd, using pane 0's cwd returns the wrong JSONL.
+	dir := ""
+	agentPanePrompt := ""
+	for _, p := range session.Panes {
+		if p.Type == "agent" {
+			dir = service.GetAgentPaneCwd(session.Name, p.Index)
+			agentPanePrompt = service.GetAgentPanePrompt(session.Name, p.Index)
+			break
+		}
+	}
+	if dir == "" {
+		dir = session.Dir
+	}
 	if session.WorktreePath != "" {
 		dir = session.WorktreePath
 	}
@@ -618,8 +631,9 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
+		// Try to match by prompt when multiple sessions share the same directory
 		var err error
-		jsonlPath, err = agentlog.FindJSONL(dir)
+		jsonlPath, err = agentlog.FindJSONLByPrompt(dir, agentPanePrompt)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "no agent log found")
 			return

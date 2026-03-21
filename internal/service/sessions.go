@@ -118,6 +118,52 @@ func ListSessions() ([]string, error) {
 	return strings.Split(raw, "\n"), nil
 }
 
+// GetAgentPaneCwd returns the working directory of a specific pane.
+func GetAgentPaneCwd(session string, pane int) string {
+	return tmuxpkg.GetPaneCwdByIndex(session, pane)
+}
+
+// GetAgentPanePrompt extracts the initial prompt from a pane's start command.
+// When Claude Code is spawned with a task argument (e.g. `claude --flags "do X"`),
+// the start command contains the prompt. Returns "" if not available.
+func GetAgentPanePrompt(session string, pane int) string {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_start_command}")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	startCmd := strings.TrimSpace(string(out))
+	if startCmd == "" {
+		return ""
+	}
+	// The command looks like: claude --dangerously-skip-permissions "prompt text"
+	// or: claude --flags 'prompt text'
+	// Extract text after the last known flag before the prompt argument.
+	// Look for the prompt after --dangerously-skip-permissions or similar flags.
+	markers := []string{"--dangerously-skip-permissions", "-p"}
+	for _, marker := range markers {
+		if idx := strings.Index(startCmd, marker); idx >= 0 {
+			rest := strings.TrimSpace(startCmd[idx+len(marker):])
+			// Strip surrounding quotes and escaped quotes
+			rest = strings.TrimPrefix(rest, "\"")
+			rest = strings.TrimPrefix(rest, "'")
+			rest = strings.ReplaceAll(rest, "\\\"", "")
+			// Trim trailing quote/semicolon/command chains
+			for _, suffix := range []string{"\";", "';", "\""} {
+				if end := strings.Index(rest, suffix); end >= 0 {
+					rest = rest[:end]
+				}
+			}
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return ""
+}
+
 // GetPaneProcess returns the current command running in a specific pane.
 func GetPaneProcess(session string, pane int) string {
 	target := fmt.Sprintf("%s:0.%d", session, pane)
