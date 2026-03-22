@@ -209,6 +209,41 @@ func findClaudePid(shellPid string) string {
 	return ""
 }
 
+// hasAgentChild checks if a shell pane has an agent (claude/aider/codex) as a child process.
+func hasAgentChild(session string, pane int) bool {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidOut, err := pidCmd.Output()
+	if err != nil {
+		return false
+	}
+	panePid := strings.TrimSpace(string(pidOut))
+	if panePid == "" {
+		return false
+	}
+	pgrepCmd := exec.Command("pgrep", "-P", panePid)
+	pgrepOut, err := pgrepCmd.Output()
+	if err != nil {
+		return false
+	}
+	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		commCmd := exec.Command("ps", "-p", pid, "-o", "comm=")
+		commOut, err := commCmd.Output()
+		if err != nil {
+			continue
+		}
+		comm := strings.TrimSpace(string(commOut))
+		if comm == "claude" || comm == "aider" || comm == "codex" || isClaudeVersion(comm) {
+			return true
+		}
+	}
+	return false
+}
+
 // GetPaneProcess returns the current command running in a specific pane.
 func GetPaneProcess(session string, pane int) string {
 	target := fmt.Sprintf("%s:0.%d", session, pane)

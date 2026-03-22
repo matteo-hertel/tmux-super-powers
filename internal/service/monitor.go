@@ -115,6 +115,12 @@ func (m *Monitor) poll() {
 		for p := 0; p < paneCount; p++ {
 			process := GetPaneProcess(name, p)
 			pType := PaneTypeFromProcess(process)
+			// If pane is a shell, check if claude is running as a child process
+			if pType == "shell" {
+				if hasAgentChild(name, p) {
+					pType = "agent"
+				}
+			}
 			pane := Pane{Index: p, Type: pType, Process: process}
 			if pType != "editor" {
 				content := CapturePaneContent(name, p)
