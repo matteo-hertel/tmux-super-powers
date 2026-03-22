@@ -624,8 +624,29 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List all available agent sessions
+	// List available agent sessions, filtered to this tmux session's panes.
 	allSessions, _ := agentlog.FindAllJSONL(dir)
+
+	// Collect agent session IDs belonging to this tmux session's panes
+	paneSessionIDs := make(map[string]bool)
+	for _, p := range session.Panes {
+		if p.Type == "agent" && p.AgentSessionID != "" {
+			paneSessionIDs[p.AgentSessionID] = true
+		}
+	}
+	// If we have pane session IDs, filter the list to only those
+	if len(paneSessionIDs) > 0 {
+		var filtered []agentlog.AgentSession
+		for _, as := range allSessions {
+			if paneSessionIDs[as.ID] {
+				filtered = append(filtered, as)
+			}
+		}
+		// Only use filtered list if it's non-empty (fallback to all if no matches)
+		if len(filtered) > 0 {
+			allSessions = filtered
+		}
+	}
 
 	// Pick JSONL file: ?session=<id>, or resolved from process, or most recent
 	var jsonlPath string
