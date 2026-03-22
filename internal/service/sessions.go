@@ -31,12 +31,13 @@ type Session struct {
 
 // Pane represents a single pane within a tmux session.
 type Pane struct {
-	Index   int    `json:"index"`
-	Type    string `json:"type"`              // editor, agent, shell, process
-	Process string `json:"process"`
-	Status  string `json:"status,omitempty"`
-	Content string `json:"content,omitempty"`
-	Prompt  string `json:"prompt,omitempty"`
+	Index          int    `json:"index"`
+	Type           string `json:"type"`                        // editor, agent, shell, process
+	Process        string `json:"process"`
+	Status         string `json:"status,omitempty"`
+	Content        string `json:"content,omitempty"`
+	Prompt         string `json:"prompt,omitempty"`
+	AgentSessionID string `json:"agentSessionId,omitempty"`    // Claude Code JSONL session UUID (resolved via lsof)
 }
 
 // DiffStat holds git diff statistics.

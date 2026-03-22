@@ -596,15 +596,26 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 	if session.WorktreePath != "" {
 		dir = session.WorktreePath
 	}
-	// Try agent pane's cwd as a more specific directory
+
+	// Resolve the agent session ID from the pane.
+	// ?pane=N selects a specific agent pane; otherwise use the first agent pane.
+	// The pane's AgentSessionID is pre-resolved by the monitor via lsof.
 	agentSessionID := ""
+	requestedPane := -1
+	if paneStr := r.URL.Query().Get("pane"); paneStr != "" {
+		if v, err := strconv.Atoi(paneStr); err == nil {
+			requestedPane = v
+		}
+	}
 	for _, p := range session.Panes {
 		if p.Type == "agent" {
+			if requestedPane >= 0 && p.Index != requestedPane {
+				continue
+			}
 			if paneCwd := service.GetAgentPaneCwd(session.Name, p.Index); paneCwd != "" {
 				dir = paneCwd
 			}
-			// Resolve the exact JSONL session by tracing the claude process's open files
-			agentSessionID = service.GetAgentSessionID(session.Name, p.Index)
+			agentSessionID = p.AgentSessionID
 			break
 		}
 	}

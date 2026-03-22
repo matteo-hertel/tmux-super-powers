@@ -123,6 +123,21 @@ func (m *Monitor) poll() {
 					primaryContent = content
 				}
 			}
+			// For agent panes, resolve the JSONL session ID (cached from prev cycle)
+			if pType == "agent" {
+				if prev, ok := existing[name]; ok {
+					for _, pp := range prev.Panes {
+						if pp.Index == p && pp.AgentSessionID != "" {
+							pane.AgentSessionID = pp.AgentSessionID
+							break
+						}
+					}
+				}
+				// Resolve if not cached (first discovery or process restarted)
+				if pane.AgentSessionID == "" {
+					pane.AgentSessionID = GetAgentSessionID(name, p)
+				}
+			}
 			panes = append(panes, pane)
 		}
 		s := Session{Name: name, Panes: panes, LastChanged: now}
