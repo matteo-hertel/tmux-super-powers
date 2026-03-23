@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,6 +77,27 @@ Press ? inside the dashboard for the full key binding reference.`,
 					ds.isGitRepo = true
 					ds.gitPath = gitPath
 					ds.branch = branch
+					// Check if this session is actually inside a git worktree
+					cwd := tmuxpkg.GetPaneCwd(s)
+					if cwd != "" {
+						gitDirOut, err1 := exec.Command("git", "-C", cwd, "rev-parse", "--git-dir").Output()
+						commonDirOut, err2 := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir").Output()
+						if err1 == nil && err2 == nil {
+							gd := strings.TrimSpace(string(gitDirOut))
+							cd := strings.TrimSpace(string(commonDirOut))
+							if !filepath.IsAbs(gd) {
+								gd = filepath.Join(cwd, gd)
+							}
+							if !filepath.IsAbs(cd) {
+								cd = filepath.Join(cwd, cd)
+							}
+							if filepath.Clean(gd) != filepath.Clean(cd) {
+								ds.isWorktree = true
+								ds.worktreePath = gitPath
+								ds.gitPath = filepath.Dir(filepath.Clean(cd))
+							}
+						}
+					}
 				}
 			}
 			m.sessions[i] = ds
