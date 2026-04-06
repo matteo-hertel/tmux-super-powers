@@ -72,8 +72,8 @@ func DetectWaitingPanes(panes []Pane, inputPatterns []string) []WaitingPane {
 		}
 		lines := strings.Split(strings.TrimRight(pane.Content, "\n"), "\n")
 		check := lines
-		if len(check) > 5 {
-			check = check[len(check)-5:]
+		if len(check) > 10 {
+			check = check[len(check)-10:]
 		}
 		matched := false
 		for _, pattern := range inputPatterns {

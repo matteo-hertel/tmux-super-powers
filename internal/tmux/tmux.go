@@ -108,6 +108,26 @@ func SendKeys(target, text string) error {
 	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
 }
 
+// SendRawKey sends a single non-literal key (e.g. "Down", "Enter", "End") to a pane.
+func SendRawKey(target, key string) error {
+	return exec.Command("tmux", "send-keys", "-t", target, key).Run()
+}
+
+// AnswerPromptFreeText selects "Other" in a Claude Code AskUserQuestion prompt
+// by sending its option number, then types the given text.
+// "Other" is always the last item: optionCount + 1.
+func AnswerPromptFreeText(target string, optionCount int, text string) error {
+	// Select "Other" by its number (last entry = optionCount + 1)
+	otherNum := fmt.Sprintf("%d", optionCount+1)
+	if err := SendKeys(target, otherNum); err != nil {
+		return fmt.Errorf("select other: %w", err)
+	}
+	// Wait for the free-text input prompt to appear
+	time.Sleep(500 * time.Millisecond)
+	// Type the answer and press Enter
+	return SendKeys(target, text)
+}
+
 // BuildListSessionsArgs builds tmux list-sessions args.
 func BuildListSessionsArgs() []string {
 	return []string{"list-sessions", "-F", "#{session_name}:#{session_path}:#{session_activity}"}

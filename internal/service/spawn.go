@@ -72,7 +72,8 @@ type SpawnResult struct {
 	GitPath      string `json:"gitPath,omitempty"`
 }
 
-// SpawnAgents deploys agents with tasks into worktrees.
+// SpawnAgents deploys agents with tasks into worktrees (git repos) or
+// directly in the target directory (non-git directories).
 // If repoDir is non-empty, it is used to find the git repo root; otherwise the server's cwd is used.
 func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.Config, repoDir string) ([]SpawnResult, error) {
 	var repoRoot string
@@ -82,9 +83,17 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 	} else {
 		repoRoot, err = spawnGetRepoRoot()
 	}
+
+	// Non-git directory: spawn agents directly without worktrees.
 	if err != nil {
-		return nil, fmt.Errorf("not a git repository: %w", err)
+		dir := repoDir
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		dir = pathutil.ExpandPath(dir)
+		return spawnDirect(tasks, dir, cfg)
 	}
+
 	repoName := filepath.Base(repoRoot)
 
 	if baseBranch == "" {
@@ -142,6 +151,37 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentWithTask)
 
 		result.Status = "ok"
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// spawnDirect creates agents directly in a directory without git worktrees.
+// Each task gets its own tmux session running the agent command in the target dir.
+func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult, error) {
+	dirName := filepath.Base(dir)
+	agentCmd := cfg.Spawn.AgentCommand
+
+	var results []SpawnResult
+	for _, task := range tasks {
+		suffix := memorableSuffix()
+		slug := TaskToBranch(task)
+		slug = strings.TrimPrefix(slug, "spawn/")
+		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s-%s", dirName, slug, suffix))
+
+		result := SpawnResult{Task: task, Session: sessionName, Status: "ok"}
+
+		if tmuxpkg.SessionExists(sessionName) {
+			tmuxpkg.KillSession(sessionName)
+		}
+
+		agentWithTask := agentCmd + " " + shellQuote(task)
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", agentWithTask); err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("session creation failed: %v", err)
+		}
+
 		results = append(results, result)
 	}
 

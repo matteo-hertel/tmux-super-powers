@@ -149,11 +149,12 @@ func LoadFrom(configPath string) (*Config, error) {
 	}
 	if len(cfg.Dash.InputPatterns) == 0 {
 		cfg.Dash.InputPatterns = []string{
-			`^\? `,
+			`^\s*\? `,
 			`\(y/n\)`,
 			`\(Y/n\)`,
 			`Do you want to`,
 			`Press Enter`,
+			`(?i)type something`,
 		}
 	}
 
@@ -223,11 +224,12 @@ func defaultConfig() *Config {
 			ErrorPatterns: []string{"FAIL", "panic:", "Error:"},
 			PromptPattern: `(\$|❯)\s*$`,
 			InputPatterns: []string{
-				`^\? `,
+				`^\s*\? `,
 				`\(y/n\)`,
 				`\(Y/n\)`,
 				`Do you want to`,
 				`Press Enter`,
+				`(?i)type something`,
 			},
 		},
 		Spawn: SpawnConfig{

@@ -434,6 +434,13 @@ func SendToPane(session string, pane int, text string) error {
 	return tmuxpkg.SendKeys(target, text)
 }
 
+// AnswerPaneFreeText navigates an interactive AskUserQuestion prompt to "Other",
+// selects it, then types the given text.
+func AnswerPaneFreeText(session string, pane int, optionCount int, text string) error {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	return tmuxpkg.AnswerPromptFreeText(target, optionCount, text)
+}
+
 // TmuxRunning returns true if the tmux server is running (has at least one session).
 func TmuxRunning() bool {
 	cmd := exec.Command("tmux", "list-sessions")

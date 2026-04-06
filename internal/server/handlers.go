@@ -114,8 +114,10 @@ func (s *Server) handleSendToPane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Pane int    `json:"pane"`
-		Text string `json:"text"`
+		Pane        int    `json:"pane"`
+		Text        string `json:"text"`
+		FreeText    bool   `json:"freeText,omitempty"`
+		OptionCount int    `json:"optionCount,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -125,7 +127,13 @@ func (s *Server) handleSendToPane(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	if err := service.SendToPane(name, req.Pane, req.Text); err != nil {
+	var err error
+	if req.FreeText {
+		err = service.AnswerPaneFreeText(name, req.Pane, req.OptionCount, req.Text)
+	} else {
+		err = service.SendToPane(name, req.Pane, req.Text)
+	}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
