@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
@@ -181,6 +182,12 @@ type dashModel struct {
 
 type dashTickMsg time.Time
 
+type dashWorktreeCleanupDoneMsg struct {
+	sessionName   string
+	removeSession bool
+	status        string
+}
+
 func dashTickCmd(refreshMs int) tea.Cmd {
 	d := time.Duration(refreshMs) * time.Millisecond
 	return tea.Tick(d, func(t time.Time) tea.Msg {
@@ -197,6 +204,14 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
+
+	case dashWorktreeCleanupDoneMsg:
+		if msg.removeSession {
+			m.removeSessionByName(msg.sessionName)
+		}
+		m.statusMsg = msg.status
+		m.mode = dashStatusMessage
 		return m, nil
 
 	case dashTickMsg:
@@ -249,7 +264,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case dashConfirmDiscard:
 			if msg.String() == "y" {
-				m.discardWorktree()
+				cmd := m.discardWorktree()
+				m.mode = dashBrowse
+				return m, cmd
 			}
 			m.mode = dashBrowse
 			return m, nil
@@ -350,11 +367,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addressReviewComments()
 				return m, nil
 			case "m":
-				m.mergeBranch()
-				return m, nil
+				return m, m.mergeBranch()
 			case "W":
-				m.cleanupMerged()
-				return m, nil
+				return m, m.cleanupMerged()
 			}
 		}
 	}
@@ -427,127 +442,122 @@ func (m *dashModel) createPR() {
 	m.mode = dashStatusMessage
 }
 
-func (m *dashModel) mergeBranch() {
+func (m *dashModel) mergeBranch() tea.Cmd {
 	if m.cursor >= len(m.sessions) {
-		return
+		return nil
 	}
 	s := m.sessions[m.cursor]
 	if !s.isGitRepo {
 		m.statusMsg = "Not a git repo"
 		m.mode = dashStatusMessage
-		return
+		return nil
 	}
 	if s.isWorktree {
-		repoRoot, err := getRepoRoot()
-		if err != nil {
-			m.statusMsg = fmt.Sprintf("Cannot find repo root: %v", err)
-			m.mode = dashStatusMessage
-			return
-		}
-		mergeCmd := exec.Command("git", "-C", repoRoot, "merge", s.branch)
-		if err := mergeCmd.Run(); err != nil {
-			m.statusMsg = fmt.Sprintf("Merge failed: %v", err)
-			m.mode = dashStatusMessage
-			return
-		}
-		tmuxpkg.KillSession(s.name)
-		if err := exec.Command("git", "-C", s.gitPath, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
-			exec.Command("git", "-C", s.gitPath, "worktree", "prune").Run()
-		}
-		exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
-		m.removeSession(m.cursor)
-		m.statusMsg = fmt.Sprintf("Merged and cleaned up %s", s.branch)
-	} else {
-		// Regular git repo — merge current branch into main/master
-		base := "main"
-		checkCmd := exec.Command("git", "-C", s.gitPath, "rev-parse", "--verify", "main")
-		if checkCmd.Run() != nil {
-			base = "master"
-		}
-		checkoutCmd := exec.Command("git", "-C", s.gitPath, "checkout", base)
-		if err := checkoutCmd.Run(); err != nil {
-			m.statusMsg = fmt.Sprintf("Checkout %s failed: %v", base, err)
-			m.mode = dashStatusMessage
-			return
-		}
-		mergeCmd := exec.Command("git", "-C", s.gitPath, "merge", s.branch)
-		if err := mergeCmd.Run(); err != nil {
-			m.statusMsg = fmt.Sprintf("Merge failed: %v", err)
-			m.mode = dashStatusMessage
-			return
-		}
-		exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
-		m.statusMsg = fmt.Sprintf("Merged %s into %s", s.branch, base)
-	}
-	m.mode = dashStatusMessage
-}
-
-func (m *dashModel) discardWorktree() {
-	if m.cursor >= len(m.sessions) {
-		return
-	}
-	s := m.sessions[m.cursor]
-	tmuxpkg.KillSession(s.name)
-	if s.isWorktree && s.worktreePath != "" {
-		if err := exec.Command("git", "-C", s.gitPath, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
-			// If git worktree remove fails (e.g. dir already gone), fall back to prune
-			exec.Command("git", "-C", s.gitPath, "worktree", "prune").Run()
-		}
-		if err := exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run(); err != nil {
-			m.statusMsg = fmt.Sprintf("Removed %s (branch delete failed: %v)", s.name, err)
-			m.mode = dashStatusMessage
-			m.removeSession(m.cursor)
-			return
-		}
-	}
-	m.removeSession(m.cursor)
-	m.statusMsg = fmt.Sprintf("Removed %s", s.name)
-	m.mode = dashStatusMessage
-}
-
-func (m *dashModel) cleanupMerged() {
-	if m.cursor >= len(m.sessions) {
-		return
-	}
-	s := m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return
-	}
-	// Check if branch is merged into main/master
-	merged := false
-	for _, base := range []string{"main", "master"} {
-		cmd := exec.Command("git", "-C", s.gitPath, "branch", "--merged", base)
-		if out, err := cmd.Output(); err == nil {
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.TrimSpace(line) == s.branch {
-					merged = true
-					break
+		m.statusMsg = fmt.Sprintf("Merging and cleaning up %s...", s.branch)
+		m.mode = dashBrowse
+		return func() tea.Msg {
+			repoRoot, err := getRepoRoot()
+			if err != nil {
+				return dashWorktreeCleanupDoneMsg{
+					sessionName: s.name,
+					status:      fmt.Sprintf("Cannot find repo root: %v", err),
 				}
 			}
-		}
-		if merged {
-			break
+			mergeCmd := exec.Command("git", "-C", repoRoot, "merge", s.branch)
+			if err := mergeCmd.Run(); err != nil {
+				return dashWorktreeCleanupDoneMsg{
+					sessionName: s.name,
+					status:      fmt.Sprintf("Merge failed: %v", err),
+				}
+			}
+			status := cleanupWorktreeSession(s, fmt.Sprintf("Merged and cleaned up %s", s.branch))
+			return dashWorktreeCleanupDoneMsg{
+				sessionName:   s.name,
+				removeSession: true,
+				status:        status,
+			}
 		}
 	}
-	if !merged {
-		m.statusMsg = fmt.Sprintf("Branch '%s' is not merged yet", s.branch)
+
+	// Regular git repo — merge current branch into main/master
+	base := "main"
+	checkCmd := exec.Command("git", "-C", s.gitPath, "rev-parse", "--verify", "main")
+	if checkCmd.Run() != nil {
+		base = "master"
+	}
+	checkoutCmd := exec.Command("git", "-C", s.gitPath, "checkout", base)
+	if err := checkoutCmd.Run(); err != nil {
+		m.statusMsg = fmt.Sprintf("Checkout %s failed: %v", base, err)
 		m.mode = dashStatusMessage
-		return
+		return nil
+	}
+	mergeCmd := exec.Command("git", "-C", s.gitPath, "merge", s.branch)
+	if err := mergeCmd.Run(); err != nil {
+		m.statusMsg = fmt.Sprintf("Merge failed: %v", err)
+		m.mode = dashStatusMessage
+		return nil
+	}
+	exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
+	m.statusMsg = fmt.Sprintf("Merged %s into %s", s.branch, base)
+	m.mode = dashStatusMessage
+	return nil
+}
+
+func (m *dashModel) discardWorktree() tea.Cmd {
+	if m.cursor >= len(m.sessions) {
+		return nil
+	}
+	s := m.sessions[m.cursor]
+	m.statusMsg = fmt.Sprintf("Cleaning up %s...", s.name)
+	return func() tea.Msg {
+		return dashWorktreeCleanupDoneMsg{
+			sessionName:   s.name,
+			removeSession: true,
+			status:        cleanupWorktreeSession(s, fmt.Sprintf("Removed %s", s.name)),
+		}
+	}
+}
+
+func (m *dashModel) cleanupMerged() tea.Cmd {
+	if m.cursor >= len(m.sessions) {
+		return nil
+	}
+	s := m.sessions[m.cursor]
+	if !s.isGitRepo {
+		m.statusMsg = "Not a git repo"
+		m.mode = dashStatusMessage
+		return nil
 	}
 	if s.isWorktree {
-		tmuxpkg.KillSession(s.name)
-		os.RemoveAll(s.worktreePath)
-		exec.Command("git", "worktree", "remove", s.worktreePath, "--force").Run()
-		exec.Command("git", "branch", "-D", s.branch).Run()
-		m.removeSession(m.cursor)
-		m.statusMsg = fmt.Sprintf("Cleaned up merged worktree %s", s.branch)
-	} else {
-		exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
-		m.statusMsg = fmt.Sprintf("Deleted merged branch %s", s.branch)
+		m.statusMsg = fmt.Sprintf("Checking merged branch %s...", s.branch)
+		m.mode = dashBrowse
+		return func() tea.Msg {
+			repoFlag := worktreeRepoFlag(s)
+			if !branchMergedIntoBase(repoFlag, s.branch) {
+				return dashWorktreeCleanupDoneMsg{
+					sessionName: s.name,
+					status:      fmt.Sprintf("Branch '%s' is not merged yet", s.branch),
+				}
+			}
+			status := cleanupWorktreeSession(s, fmt.Sprintf("Cleaned up merged worktree %s", s.branch))
+			return dashWorktreeCleanupDoneMsg{
+				sessionName:   s.name,
+				removeSession: true,
+				status:        status,
+			}
+		}
 	}
+
+	// Check if branch is merged into main/master
+	if !branchMergedIntoBase(s.gitPath, s.branch) {
+		m.statusMsg = fmt.Sprintf("Branch '%s' is not merged yet", s.branch)
+		m.mode = dashStatusMessage
+		return nil
+	}
+	exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
+	m.statusMsg = fmt.Sprintf("Deleted merged branch %s", s.branch)
 	m.mode = dashStatusMessage
+	return nil
 }
 
 func (m *dashModel) fixCI() {
@@ -624,6 +634,65 @@ func (m *dashModel) removeSession(idx int) {
 	}
 }
 
+func (m *dashModel) removeSessionByName(name string) {
+	for i, s := range m.sessions {
+		if s.name == name {
+			m.removeSession(i)
+			return
+		}
+	}
+}
+
+func cleanupWorktreeSession(s dashSession, successStatus string) string {
+	_ = tmuxpkg.KillSession(s.name)
+	if !s.isWorktree || s.worktreePath == "" {
+		return successStatus
+	}
+
+	repoFlag := worktreeRepoFlag(s)
+	if err := exec.Command("git", "-C", repoFlag, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
+		_ = exec.Command("git", "-C", repoFlag, "worktree", "prune").Run()
+	}
+	if s.branch != "" {
+		if err := exec.Command("git", "-C", repoFlag, "branch", "-D", s.branch).Run(); err != nil {
+			return fmt.Sprintf("%s (branch delete failed: %v)", successStatus, err)
+		}
+	}
+	return successStatus
+}
+
+func worktreeRepoFlag(s dashSession) string {
+	if s.worktreePath != "" {
+		if commonDirOut, err := exec.Command("git", "-C", s.worktreePath, "rev-parse", "--git-common-dir").Output(); err == nil {
+			commonDir := strings.TrimSpace(string(commonDirOut))
+			if commonDir != "" {
+				if !filepath.IsAbs(commonDir) {
+					commonDir = filepath.Join(s.worktreePath, commonDir)
+				}
+				return filepath.Dir(filepath.Clean(commonDir))
+			}
+		}
+	}
+	if s.gitPath != "" {
+		return s.gitPath
+	}
+	return s.worktreePath
+}
+
+func branchMergedIntoBase(repoPath, branch string) bool {
+	for _, base := range []string{"main", "master"} {
+		cmd := exec.Command("git", "-C", repoPath, "branch", "--merged", base)
+		if out, err := cmd.Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.TrimSpace(line) == branch {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // enrichWithPRData2 fetches PR/CI info for a dashSession lazily.
 func enrichWithPRData2(s *dashSession) {
 	if s.prNumber > 0 {
@@ -648,19 +717,57 @@ func (m dashModel) View() string {
 		return m.viewHelp()
 	}
 
-	leftWidth := m.width * 40 / 100
-	rightWidth := m.width - leftWidth - 3
-
 	// Title bar
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("212")).
 		Render("  tsp dash — Mission Control")
+	title = ansi.Truncate(title, m.width, "")
+
+	modalHeight := 0
+	switch m.mode {
+	case dashConfirmKill, dashConfirmDiscard, dashContinuePrompt, dashStatusMessage:
+		modalHeight = 1
+	}
+
+	panelOuterHeight := m.height - 2 - modalHeight // title + legend + optional modal
+	if panelOuterHeight < 3 {
+		panelOuterHeight = 3
+	}
+
+	panelStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(0, 1)
+	panelFrameWidth, panelFrameHeight := panelStyle.GetFrameSize()
+	panelContentHeight := panelOuterHeight - panelFrameHeight
+	if panelContentHeight < 1 {
+		panelContentHeight = 1
+	}
+
+	leftOuterWidth := m.width * 40 / 100
+	if leftOuterWidth < panelFrameWidth+10 {
+		leftOuterWidth = panelFrameWidth + 10
+	}
+	if leftOuterWidth > m.width-(panelFrameWidth+10) {
+		leftOuterWidth = m.width - (panelFrameWidth + 10)
+	}
+	if leftOuterWidth < panelFrameWidth+1 {
+		leftOuterWidth = panelFrameWidth + 1
+	}
+	rightOuterWidth := m.width - leftOuterWidth
+	if rightOuterWidth < panelFrameWidth+1 {
+		rightOuterWidth = panelFrameWidth + 1
+	}
+	leftWidth := leftOuterWidth - panelFrameWidth
+	rightWidth := rightOuterWidth - panelFrameWidth
 
 	// Left panel: session list
 	now := time.Now()
 	var sessionLines []string
-	for i, s := range m.sessions {
+	start, end := visibleSessionRange(len(m.sessions), m.cursor, panelContentHeight)
+	for i := start; i < end; i++ {
+		s := m.sessions[i]
 		icon := statusIcon(s.status)
 		timeSince := formatTimeSince(s.lastChanged, now)
 
@@ -686,6 +793,7 @@ func (m dashModel) View() string {
 		}
 
 		line := fmt.Sprintf(" %s %-*s %s", icon, nameWidth, label, extra)
+		line = ansi.Truncate(line, leftWidth-1, "…")
 
 		if i == m.cursor {
 			style := lipgloss.NewStyle().
@@ -700,23 +808,16 @@ func (m dashModel) View() string {
 		}
 	}
 
-	panelHeight := m.height - 6 // room for title + legend + modal
-	leftPanel := lipgloss.NewStyle().
+	leftPanel := panelStyle.Copy().
 		Width(leftWidth).
-		Height(panelHeight).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(0, 1).
+		Height(panelContentHeight).
 		Render(strings.Join(sessionLines, "\n"))
 
 	// Right panel: session detail + actions
-	rightContent := m.viewDetailPanel(rightWidth, panelHeight)
-	rightPanel := lipgloss.NewStyle().
+	rightContent := m.viewDetailPanel(rightWidth, panelContentHeight)
+	rightPanel := panelStyle.Copy().
 		Width(rightWidth).
-		Height(panelHeight).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(0, 1).
+		Height(panelContentHeight).
 		Render(rightContent)
 
 	layout := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
@@ -742,6 +843,7 @@ func (m dashModel) View() string {
 		key.Render("r") + " reviews " +
 		key.Render("m") + " merge " +
 		key.Render("?") + " help"
+	legend = ansi.Truncate(legend, m.width, "")
 
 	result := fmt.Sprintf("%s\n%s\n%s", title, layout, legend)
 
@@ -839,8 +941,8 @@ func (m dashModel) viewDetailPanel(width, height int) string {
 		}
 	}
 
-	// Loading indicator
-	if m.statusMsg != "" && m.mode == dashStatusMessage {
+	// Operation status
+	if m.statusMsg != "" {
 		lines = append(lines, "")
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(fmt.Sprintf("  ⟳ %s", m.statusMsg)))
 	}
@@ -907,12 +1009,12 @@ func (m dashModel) viewDetailPanel(width, height int) string {
 		}
 	}
 
-	return strings.Join(lines, "\n")
+	return boundLines(lines, width, height)
 }
 
 func (m dashModel) viewHelp() string {
 	help := lipgloss.NewStyle().
-		Width(m.width - 4).
+		Width(m.width-4).
 		Padding(2, 4).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("212")).
@@ -968,4 +1070,43 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+func visibleSessionRange(total, cursor, maxRows int) (int, int) {
+	if total <= 0 || maxRows <= 0 {
+		return 0, 0
+	}
+	if maxRows >= total {
+		return 0, total
+	}
+	if cursor < 0 {
+		cursor = 0
+	} else if cursor >= total {
+		cursor = total - 1
+	}
+	start := cursor - maxRows/2
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRows > total {
+		start = total - maxRows
+	}
+	return start, start + maxRows
+}
+
+func boundLines(lines []string, width, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	if width <= 0 {
+		return strings.Join(lines, "\n")
+	}
+	bounded := make([]string, len(lines))
+	for i, line := range lines {
+		bounded[i] = ansi.Truncate(line, width, "…")
+	}
+	return strings.Join(bounded, "\n")
 }
