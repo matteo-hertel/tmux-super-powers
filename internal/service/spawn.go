@@ -135,20 +135,20 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			}
 		}
 
+		// Pass the task as a CLI argument to the agent command so it starts
+		// working immediately — avoids all send-keys/Enter issues. Dependency
+		// install runs *inside* the pane (non-blocking) so spawning returns
+		// fast; the agent launches once install finishes.
+		agentWithTask := agentCmd + " " + shellQuote(task)
 		if !noInstall {
-			spawnCopyNodeModules(repoRoot, worktreePath)
-			pm := spawnDetectPM(repoRoot)
-			if pm != "" {
-				spawnRunPM(pm, worktreePath, repoRoot)
+			if pm := spawnDetectPM(repoRoot); pm != "" {
+				agentWithTask = pm + " install && " + agentWithTask
 			}
 		}
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		// Pass the task as a CLI argument to the agent command so it starts
-		// working immediately — avoids all send-keys/Enter issues.
-		agentWithTask := agentCmd + " " + shellQuote(task)
 		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentWithTask)
 
 		result.Status = "ok"
@@ -276,31 +276,3 @@ func spawnCopyNodeModules(repoRoot, worktreePath string) error {
 	})
 }
 
-func spawnRunPM(pm, path, repoRoot string) {
-	if pm == "yarn" {
-		yarnDir := filepath.Join(path, ".yarn")
-		os.MkdirAll(yarnDir, 0755)
-		for _, name := range []string{"cache", "install-state.gz", "unplugged"} {
-			src := filepath.Join(repoRoot, ".yarn", name)
-			dst := filepath.Join(yarnDir, name)
-			if _, err := os.Stat(src); err == nil {
-				if _, err := os.Stat(dst); err != nil {
-					exec.Command("cp", "-a", src, dst).Run()
-				}
-			}
-		}
-	}
-	var cmd *exec.Cmd
-	switch pm {
-	case "yarn":
-		cmd = exec.Command("yarn", "install")
-	case "pnpm":
-		cmd = exec.Command("pnpm", "install")
-	case "bun":
-		cmd = exec.Command("bun", "install")
-	default:
-		cmd = exec.Command("npm", "install")
-	}
-	cmd.Dir = path
-	cmd.Run()
-}

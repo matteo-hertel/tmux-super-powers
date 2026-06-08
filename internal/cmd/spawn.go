@@ -21,9 +21,11 @@ var spawnCmd = &cobra.Command{
 Each task gets:
 1. A branch auto-named from the task description (spawn/fix-auth-bug)
 2. A git worktree
-3. Dependencies installed
-4. A tmux session with nvim (left) + claude (right)
-5. The task prompt sent to claude automatically
+3. A tmux session with nvim (left) + claude (right)
+
+Dependency install (and any --setup command) runs inside the agent pane, so
+spawn returns immediately; the agent launches with the task as its prompt once
+install finishes. Use --no-install to skip it.
 
 Examples:
   tsp spawn "fix the auth bug" "add dark mode" "refactor db layer"
@@ -125,31 +127,18 @@ Examples:
 				fmt.Printf("      ✓ worktree created\n")
 			}
 
-			// Install dependencies
-			if !noInstall {
-				pm := detectPackageManager(repoRoot)
-				if pm != "" {
-					if pm == "yarn" {
-						copyYarnCache(repoRoot, worktreePath)
-					}
-					fmt.Printf("      ◌ %s install...\n", pm)
-					if err := runPackageManager(pm, worktreePath); err != nil {
-						fmt.Printf("      ⚠ %s install failed: %v\n", pm, err)
-					} else {
-						fmt.Printf("      ✓ %s install\n", pm)
-					}
-				}
-			}
-
-			// Run setup command
+			// Build the agent pane command. Dependency install and any setup
+			// run *inside* the pane so `tsp spawn` returns immediately instead
+			// of blocking on a multi-minute install. The agent launches once
+			// they finish, with the task passed as a CLI argument (no send-keys).
+			rightCmd := agentCmd + " " + shellQuoteArg(task)
 			if setup != "" {
-				fmt.Printf("      ◌ running setup...\n")
-				setupCmd := exec.Command("sh", "-c", setup)
-				setupCmd.Dir = worktreePath
-				if err := setupCmd.Run(); err != nil {
-					fmt.Printf("      ⚠ setup failed: %v\n", err)
-				} else {
-					fmt.Printf("      ✓ setup complete\n")
+				rightCmd = setup + " && " + rightCmd
+			}
+			if !noInstall {
+				if pm := detectPackageManager(repoRoot); pm != "" {
+					rightCmd = pm + " install && " + rightCmd
+					fmt.Printf("      ◌ %s install will run in the agent pane\n", pm)
 				}
 			}
 
@@ -157,13 +146,8 @@ Examples:
 			if tmuxpkg.SessionExists(sessionName) {
 				tmuxpkg.KillSession(sessionName)
 			}
-			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentCmd)
-			fmt.Printf("      ✓ session created\n")
-
-			// Send task prompt to claude pane
-			target := fmt.Sprintf("%s:0.1", sessionName)
-			tmuxpkg.SendKeys(target, task)
-			fmt.Printf("      ✓ prompt sent to agent\n\n")
+			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", rightCmd)
+			fmt.Printf("      ✓ session created — deps + agent starting in pane\n\n")
 		}
 
 		if dryRun {
@@ -183,6 +167,12 @@ Examples:
 			fmt.Println(" Run `tsp dash` to monitor.")
 		}
 	},
+}
+
+// shellQuoteArg wraps s in single quotes, escaping embedded single quotes, so
+// it can be safely interpolated into a shell command run by the agent pane.
+func shellQuoteArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func init() {
