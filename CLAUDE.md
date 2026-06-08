@@ -68,6 +68,10 @@ Routes registered in `server.go`, handlers in `handlers.go`:
 | POST | `/api/sessions` | Create session (name, dir, leftCmd, rightCmd) |
 | DELETE | `/api/sessions/{name}` | Delete session (optional worktree cleanup) |
 | POST | `/api/sessions/{name}/send` | Send text to pane |
+| GET | `/api/sessions/{name}/agent-runs` | List durable agent runs for a session |
+| GET | `/api/agent-runs/{runId}/log` | Read provider-parsed run log |
+| GET | `/api/questions/pending` | List unanswered agent questions |
+| POST | `/api/questions/{questionId}/answer` | Answer a recorded agent question |
 | POST | `/api/spawn` | Deploy agents (tasks, base, dir) |
 | GET | `/api/sessions/{name}/pr` | Get PR info |
 | POST | `/api/sessions/{name}/pr` | Create PR |

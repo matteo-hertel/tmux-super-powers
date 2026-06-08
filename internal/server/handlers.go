@@ -114,24 +114,47 @@ func (s *Server) handleSendToPane(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Pane        int    `json:"pane"`
-		Text        string `json:"text"`
-		FreeText    bool   `json:"freeText,omitempty"`
-		OptionCount int    `json:"optionCount,omitempty"`
+		Pane                  int    `json:"pane"`
+		Text                  string `json:"text"`
+		FreeText              bool   `json:"freeText,omitempty"`
+		OptionCount           int    `json:"optionCount,omitempty"`
+		RunID                 string `json:"runId,omitempty"`
+		QuestionID            string `json:"questionId,omitempty"`
+		SelectedOptionIndexes []int  `json:"selectedOptionIndexes,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.QuestionID != "" {
+		s.answerQuestionWithRequest(w, req.QuestionID, service.AnswerQuestionRequest{
+			SelectedOptionIndexes: req.SelectedOptionIndexes,
+			Text:                  req.Text,
+		})
 		return
 	}
 	if req.Text == "" {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
+	if req.RunID != "" {
+		if s.agentRuns == nil {
+			writeError(w, http.StatusNotFound, "agent run not found")
+			return
+		}
+		run, ok := s.agentRuns.Find(req.RunID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "agent run not found")
+			return
+		}
+		name = run.SessionName
+		req.Pane = run.PaneIndex
+	}
 	var err error
 	if req.FreeText {
-		err = service.AnswerPaneFreeText(name, req.Pane, req.OptionCount, req.Text)
+		err = s.answerFreeText(name, req.Pane, req.OptionCount, req.Text)
 	} else {
-		err = service.SendToPane(name, req.Pane, req.Text)
+		err = s.sendToPane(name, req.Pane, req.Text)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -162,9 +185,16 @@ func (s *Server) handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-track spawned sessions for lifecycle automation
 	if s.watcher != nil {
-		for _, r := range results {
-			if r.Status == "ok" {
-				s.watcher.Track(r.Session, r.Branch, r.WorktreePath, r.GitPath)
+		for i := range results {
+			if results[i].Status == "ok" {
+				s.watcher.Track(results[i].Session, results[i].Branch, results[i].WorktreePath, results[i].GitPath)
+			}
+		}
+	}
+	for i := range results {
+		if results[i].Status == "ok" {
+			if runID := s.registerSpawnedAgentRun(results[i].Session); runID != "" {
+				results[i].AgentRunID = runID
 			}
 		}
 	}
@@ -591,12 +621,68 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSessionAgentRuns(w http.ResponseWriter, r *http.Request) {
+	name := ParseSessionName(r)
+	if s.agentRuns == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"runs": []service.AgentRun{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"runs": s.agentRuns.ListBySession(name)})
+}
+
+func (s *Server) handleGetAgentRunLog(w http.ResponseWriter, r *http.Request) {
+	if s.agentRuns == nil {
+		writeError(w, http.StatusNotFound, "agent run not found")
+		return
+	}
+	runID := r.PathValue("runId")
+	run, ok := s.agentRuns.Find(runID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent run not found")
+		return
+	}
+	offset := parseOffset(r)
+	resp, err := s.readAgentRunLog(run, offset)
+	if err != nil {
+		if fallback, ok := s.fallbackPaneLog(run, offset); ok {
+			writeJSON(w, http.StatusOK, fallback)
+			return
+		}
+		writeError(w, http.StatusNotFound, "no agent log found")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePendingQuestions(w http.ResponseWriter, r *http.Request) {
+	s.refreshQuestionsFromRuns()
+	if s.questions == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"questions": []service.PendingQuestion{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"questions": s.questions.ListPending()})
+}
+
+func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
+	s.answerQuestionWithRequest(w, r.PathValue("questionId"), decodeAnswerQuestionRequest(r))
+}
+
 func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 	name := ParseSessionName(r)
 	session := s.monitor.FindSession(name)
 	if session == nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
+	}
+
+	if run, ok := s.resolveRunForLegacyAgentLog(name, r); ok && run.LogPath != "" {
+		offset := parseOffset(r)
+		resp, err := s.readAgentRunLog(run, offset)
+		if err == nil {
+			resp.Sessions = legacyAgentSessionsForRun(run)
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 	}
 
 	// Determine session directory for JSONL discovery.
@@ -717,4 +803,179 @@ func (s *Server) handleGetAgentLog(w http.ResponseWriter, r *http.Request) {
 		ByteOffset: newOffset,
 		Sessions:   allSessions,
 	})
+}
+
+func parseOffset(r *http.Request) int64 {
+	var offset int64
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		offset, _ = strconv.ParseInt(offsetStr, 10, 64)
+	}
+	return offset
+}
+
+func (s *Server) readAgentRunLog(run service.AgentRun, offset int64) (agentlog.AgentLogResponse, error) {
+	resp, err := agentlog.ReadRunLog(agentlog.RunLogRef{
+		ID:             run.ID,
+		Provider:       run.Provider,
+		CWD:            run.CWD,
+		LogPath:        run.LogPath,
+		AgentSessionID: run.AgentSessionID,
+	}, offset)
+	if err != nil {
+		return agentlog.AgentLogResponse{}, err
+	}
+	if s.questions != nil {
+		s.questions.RefreshFromLog(run, resp.Chunks, time.Now().UTC())
+	}
+	return resp, nil
+}
+
+func (s *Server) fallbackPaneLog(run service.AgentRun, offset int64) (agentlog.AgentLogResponse, bool) {
+	if offset > 0 {
+		return agentlog.AgentLogResponse{}, false
+	}
+	session := s.monitor.FindSession(run.SessionName)
+	if session == nil {
+		return agentlog.AgentLogResponse{}, false
+	}
+	for _, pane := range session.Panes {
+		if pane.Index == run.PaneIndex && pane.Content != "" {
+			return agentlog.AgentLogResponse{
+				RunID:      run.ID,
+				Provider:   run.Provider,
+				Chunks:     []agentlog.Chunk{{Type: "assistant", Text: pane.Content}},
+				Ongoing:    run.Status == "active" || run.Status == "waiting",
+				ByteOffset: int64(len(pane.Content)),
+			}, true
+		}
+	}
+	return agentlog.AgentLogResponse{}, false
+}
+
+func (s *Server) refreshQuestionsFromRuns() {
+	if s.agentRuns == nil || s.questions == nil {
+		return
+	}
+	for _, run := range s.agentRuns.List() {
+		if run.Status == "stopped" || run.LogPath == "" {
+			continue
+		}
+		resp, err := s.readAgentRunLog(run, 0)
+		if err != nil {
+			continue
+		}
+		s.questions.RefreshFromLog(run, resp.Chunks, time.Now().UTC())
+	}
+}
+
+func decodeAnswerQuestionRequest(r *http.Request) service.AnswerQuestionRequest {
+	var req service.AnswerQuestionRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	return req
+}
+
+func (s *Server) answerQuestionWithRequest(w http.ResponseWriter, questionID string, req service.AnswerQuestionRequest) {
+	if s.questions == nil || s.agentRuns == nil {
+		writeError(w, http.StatusNotFound, "question not found")
+		return
+	}
+	q, ok := s.questions.Find(questionID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "question not found")
+		return
+	}
+	run, ok := s.agentRuns.Find(q.RunID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent run not found")
+		return
+	}
+	text, freeText, optionCount, err := service.BuildQuestionAnswer(q, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if freeText {
+		err = s.answerFreeText(run.SessionName, run.PaneIndex, optionCount, text)
+	} else {
+		err = s.sendToPane(run.SessionName, run.PaneIndex, text)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.questions.MarkAnswered(questionID, time.Now().UTC())
+	writeJSON(w, http.StatusOK, map[string]string{"status": "answered"})
+}
+
+func (s *Server) resolveRunForLegacyAgentLog(name string, r *http.Request) (service.AgentRun, bool) {
+	if s.agentRuns == nil {
+		return service.AgentRun{}, false
+	}
+	if runID := r.URL.Query().Get("runId"); runID != "" {
+		return s.agentRuns.Find(runID)
+	}
+	requestedPane := -1
+	if paneStr := r.URL.Query().Get("pane"); paneStr != "" {
+		if v, err := strconv.Atoi(paneStr); err == nil {
+			requestedPane = v
+		}
+	}
+	if requestedPane >= 0 {
+		return s.agentRuns.FindByPane(name, requestedPane)
+	}
+	for _, run := range s.agentRuns.ListBySession(name) {
+		if run.Status != "stopped" {
+			return run, true
+		}
+	}
+	runs := s.agentRuns.ListBySession(name)
+	if len(runs) == 0 {
+		return service.AgentRun{}, false
+	}
+	return runs[0], true
+}
+
+func legacyAgentSessionsForRun(run service.AgentRun) []agentlog.AgentSession {
+	if run.Provider != service.AgentProviderClaude || run.CWD == "" {
+		return nil
+	}
+	sessions, _ := agentlog.FindAllJSONL(run.CWD)
+	return sessions
+}
+
+func (s *Server) registerSpawnedAgentRun(sessionName string) string {
+	if s.agentRuns == nil {
+		return ""
+	}
+	const agentPane = 1
+	process := service.GetPaneProcess(sessionName, agentPane)
+	info := service.DetectPaneAgentProcess(sessionName, agentPane, process)
+	provider := info.Provider
+	if provider == "" {
+		provider = service.DetectAgentProvider(process)
+	}
+	if provider == service.AgentProviderFallback && s.cfg != nil && strings.Contains(s.cfg.Spawn.AgentCommand, "codex") {
+		provider = service.AgentProviderCodex
+	}
+	cwd := service.GetAgentPaneCwd(sessionName, agentPane)
+	agentSessionID := ""
+	if provider == service.AgentProviderClaude {
+		agentSessionID = service.GetAgentSessionID(sessionName, agentPane)
+	}
+	logPath, confidence := service.ResolveAgentLogPath(provider, cwd, agentSessionID)
+	run, err := s.agentRuns.UpsertObserved(service.ObservedAgentRun{
+		Provider:       provider,
+		SessionName:    sessionName,
+		PaneIndex:      agentPane,
+		PID:            info.PID,
+		CWD:            cwd,
+		LogPath:        logPath,
+		Status:         "active",
+		Confidence:     confidence,
+		AgentSessionID: agentSessionID,
+	}, time.Now().UTC())
+	if err != nil {
+		return ""
+	}
+	return run.ID
 }

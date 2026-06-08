@@ -44,13 +44,15 @@ type AskUserOption struct {
 
 // AskUserQuestionData is a single question from the AskUserQuestion tool.
 type AskUserQuestionData struct {
-	Question string           `json:"question"`
-	Options  []AskUserOption  `json:"options"`
+	Question        string          `json:"question"`
+	Options         []AskUserOption `json:"options"`
+	MultiSelect     bool            `json:"multiSelect"`
+	FreeTextAllowed bool            `json:"freeTextAllowed"`
 }
 
 // DisplayItem is a structured element for rendering in the mobile app.
 type DisplayItem struct {
-	Type          string                `json:"type"`                    // "thinking", "text", "tool_call", "ask_user"
+	Type          string                `json:"type"` // "thinking", "text", "tool_call", "ask_user"
 	Text          string                `json:"text,omitempty"`
 	Tool          string                `json:"tool,omitempty"`
 	Summary       string                `json:"summary,omitempty"`
@@ -72,8 +74,19 @@ type Chunk struct {
 
 // AgentLogResponse is the API response.
 type AgentLogResponse struct {
+	RunID      string         `json:"runId,omitempty"`
+	Provider   string         `json:"provider,omitempty"`
 	Chunks     []Chunk        `json:"chunks"`
 	Ongoing    bool           `json:"ongoing"`
 	ByteOffset int64          `json:"byteOffset"`
 	Sessions   []AgentSession `json:"sessions,omitempty"`
+}
+
+// RunLogRef is the run metadata needed by provider adapters.
+type RunLogRef struct {
+	ID             string
+	Provider       string
+	CWD            string
+	LogPath        string
+	AgentSessionID string
 }

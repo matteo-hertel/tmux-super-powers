@@ -141,7 +141,7 @@ func buildChunks(msgs []classifiedMsg) []Chunk {
 
 func mergeAssistantMsgs(msgs []classifiedMsg) Chunk {
 	chunk := Chunk{Type: "assistant"}
-	pendingTools := make(map[string]*DisplayItem)
+	pendingTools := make(map[string]int)
 
 	for _, m := range msgs {
 		if m.timestamp != "" && chunk.Timestamp == "" {
@@ -154,8 +154,8 @@ func mergeAssistantMsgs(msgs []classifiedMsg) Chunk {
 		if m.role == "tool_result" {
 			for _, b := range m.blocks {
 				if b.Type == "tool_result" && b.ToolUseID != "" {
-					if item, ok := pendingTools[b.ToolUseID]; ok {
-						item.Result = truncate(extractResultText(b.Content), 500)
+					if idx, ok := pendingTools[b.ToolUseID]; ok && idx >= 0 && idx < len(chunk.Items) {
+						chunk.Items[idx].Result = truncate(extractResultText(b.Content), 500)
 						delete(pendingTools, b.ToolUseID)
 					}
 				}
@@ -196,7 +196,7 @@ func mergeAssistantMsgs(msgs []classifiedMsg) Chunk {
 					chunk.Items = append(chunk.Items, item)
 				}
 				if b.ID != "" {
-					pendingTools[b.ID] = &chunk.Items[len(chunk.Items)-1]
+					pendingTools[b.ID] = len(chunk.Items) - 1
 				}
 			}
 		}
@@ -215,9 +215,11 @@ func parseAskUserQuestion(b ContentBlock) DisplayItem {
 
 	var input struct {
 		Questions []struct {
-			Question    string `json:"question"`
-			MultiSelect bool   `json:"multiSelect"`
-			Options     []struct {
+			Question        string `json:"question"`
+			MultiSelect     bool   `json:"multiSelect"`
+			FreeTextAllowed bool   `json:"freeTextAllowed"`
+			AllowOther      bool   `json:"allowOther"`
+			Options         []struct {
 				Label       string `json:"label"`
 				Description string `json:"description"`
 			} `json:"options"`
@@ -230,7 +232,9 @@ func parseAskUserQuestion(b ContentBlock) DisplayItem {
 
 	for _, q := range input.Questions {
 		qd := AskUserQuestionData{
-			Question: q.Question,
+			Question:        q.Question,
+			MultiSelect:     q.MultiSelect,
+			FreeTextAllowed: q.FreeTextAllowed || q.AllowOther,
 		}
 		for _, o := range q.Options {
 			qd.Options = append(qd.Options, AskUserOption{

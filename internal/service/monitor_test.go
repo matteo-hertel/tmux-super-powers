@@ -41,3 +41,24 @@ func TestMonitorSubscribeUnsubscribe(t *testing.T) {
 		t.Error("expected channel to be closed")
 	}
 }
+
+func TestShouldEmitWaitingEventOnlyForNewWaitingState(t *testing.T) {
+	prev := &Session{
+		Panes: []Pane{
+			{Index: 1, Status: "waiting", Prompt: "Choose one", AgentRunID: "run_1"},
+		},
+	}
+
+	if shouldEmitWaitingEvent(prev, Pane{Index: 1, Status: "waiting", Prompt: "Choose one", AgentRunID: "run_1"}) {
+		t.Fatal("expected repeated waiting pane to be suppressed")
+	}
+	if !shouldEmitWaitingEvent(prev, Pane{Index: 1, Status: "waiting", Prompt: "Choose two", AgentRunID: "run_1"}) {
+		t.Fatal("expected changed prompt to emit")
+	}
+	if !shouldEmitWaitingEvent(prev, Pane{Index: 1, Status: "waiting", Prompt: "Choose one", AgentRunID: "run_2"}) {
+		t.Fatal("expected changed run to emit")
+	}
+	if !shouldEmitWaitingEvent(prev, Pane{Index: 2, Status: "waiting", Prompt: "Choose one", AgentRunID: "run_1"}) {
+		t.Fatal("expected newly waiting pane to emit")
+	}
+}

@@ -35,6 +35,57 @@ func TestInferStatus(t *testing.T) {
 	}
 }
 
+func TestStripANSIRemovesTerminalColorSequences(t *testing.T) {
+	input := "\x1b[38;5;153mAI_GATEWAY_API_KEY\x1b[39m and \x1b[38;2;248;248;242mtext\x1b[0m\r\n"
+	got := StripANSI(input)
+	want := "AI_GATEWAY_API_KEY and text\n"
+	if got != want {
+		t.Fatalf("StripANSI() = %q, want %q", got, want)
+	}
+}
+
+func TestDetectWaitingPanesDoesNotExposeMenuNavigationHelpAsPrompt(t *testing.T) {
+	panes := []Pane{
+		{
+			Index: 1,
+			Type:  "agent",
+			Content: "Question?\n" +
+				"\x1b[38;5;153mPress Enter to select, press up and down to navigate\x1b[0m\n",
+		},
+	}
+
+	waiting := DetectWaitingPanes(panes, []string{`Press Enter`})
+	if len(waiting) != 1 {
+		t.Fatalf("expected one waiting pane, got %d", len(waiting))
+	}
+	if waiting[0].Prompt != "Question?" {
+		t.Fatalf("prompt = %q, want question without navigation help", waiting[0].Prompt)
+	}
+}
+
+func TestShouldEmitWaitingEventIgnoresTerminalStyleChanges(t *testing.T) {
+	prev := &Session{
+		Panes: []Pane{
+			{
+				Index:      1,
+				Status:     "waiting",
+				Prompt:     "\x1b[38;5;153mPress Enter to select, press up and down to navigate\x1b[0m",
+				AgentRunID: "run_1",
+			},
+		},
+	}
+	current := Pane{
+		Index:      1,
+		Status:     "waiting",
+		Prompt:     "\x1b[38;5;154mPress Enter to select, press up and down to navigate\x1b[0m",
+		AgentRunID: "run_1",
+	}
+
+	if shouldEmitWaitingEvent(prev, current) {
+		t.Fatal("expected terminal style-only prompt changes to be suppressed")
+	}
+}
+
 func TestStatusIcon(t *testing.T) {
 	tests := []struct {
 		status string

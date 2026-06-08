@@ -21,11 +21,14 @@ func newTestServer() *Server {
 	deviceStore := device.NewStore(filepath.Join(tmpDir, "devices.json"))
 	adminToken := "tsp_admin_testtoken"
 	authMw := auth.NewMiddleware(adminToken, deviceStore)
+	agentRuns, _ := service.NewAgentRunRegistry(filepath.Join(tmpDir, "agent-runs.json"))
 
 	return &Server{
-		cfg:     &config.Config{},
-		bus:     service.NewBus(),
-		monitor: service.NewMonitor(500, nil, "", nil, service.NewBus()),
+		cfg:       &config.Config{},
+		bus:       service.NewBus(),
+		monitor:   service.NewMonitor(500, nil, "", nil, service.NewBus()),
+		agentRuns: agentRuns,
+		questions: service.NewQuestionRegistry(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
@@ -33,6 +36,8 @@ func newTestServer() *Server {
 		pairing:        device.NewPairingManager(5 * time.Minute),
 		adminToken:     adminToken,
 		authMiddleware: authMw,
+		sendToPane:     service.SendToPane,
+		answerFreeText: service.AnswerPaneFreeText,
 	}
 }
 

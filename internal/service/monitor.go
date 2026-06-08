@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -17,6 +18,7 @@ type Monitor struct {
 	subMu         sync.Mutex
 	stopCh        chan struct{}
 	bus           *Bus
+	agentRuns     *AgentRunRegistry
 }
 
 func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string, inputPatterns []string, bus *Bus) *Monitor {
@@ -28,6 +30,12 @@ func NewMonitor(refreshMs int, errorPatterns []string, promptPattern string, inp
 		stopCh:        make(chan struct{}),
 		bus:           bus,
 	}
+}
+
+func (m *Monitor) SetAgentRunRegistry(registry *AgentRunRegistry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentRuns = registry
 }
 
 func (m *Monitor) Start() { go m.loop() }
@@ -54,6 +62,16 @@ func (m *Monitor) FindSession(name string) *Session {
 		}
 	}
 	return nil
+}
+
+// SetSessionsForTest replaces the monitor snapshot. It is exported so handler
+// tests in other packages can exercise routes without a real tmux server.
+func (m *Monitor) SetSessionsForTest(sessions []Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]Session, len(sessions))
+	copy(cp, sessions)
+	m.sessions = cp
 }
 
 // Subscribe returns a channel that receives session snapshots on every refresh.
@@ -95,6 +113,11 @@ func (m *Monitor) loop() {
 func (m *Monitor) poll() {
 	names, err := ListSessions()
 	if err != nil || len(names) == 0 {
+		if m.agentRuns != nil {
+			if markErr := m.agentRuns.MarkUnseenStopped(nil, time.Now().UTC()); markErr != nil {
+				log.Printf("agent run registry: mark stopped: %v", markErr)
+			}
+		}
 		m.mu.Lock()
 		m.sessions = nil
 		m.mu.Unlock()
@@ -102,6 +125,7 @@ func (m *Monitor) poll() {
 		return
 	}
 	now := time.Now()
+	seenRuns := make(map[string]bool)
 	m.mu.Lock()
 	existing := make(map[string]*Session)
 	for i := range m.sessions {
@@ -112,12 +136,15 @@ func (m *Monitor) poll() {
 		paneCount := GetPaneCount(name)
 		var panes []Pane
 		var primaryContent string
+		agentObservations := make(map[int]ObservedAgentRun)
 		for p := 0; p < paneCount; p++ {
 			process := GetPaneProcess(name, p)
 			pType := PaneTypeFromProcess(process)
+			agentInfo := AgentProcessInfo{}
 			// If pane is a shell, check if claude is running as a child process
 			if pType == "shell" {
-				if hasAgentChild(name, p) {
+				agentInfo = DetectPaneAgentProcess(name, p, process)
+				if (agentInfo.Provider != "" && agentInfo.Provider != AgentProviderFallback) || agentInfo.Command == "aider" {
 					pType = "agent"
 				}
 			}
@@ -131,6 +158,18 @@ func (m *Monitor) poll() {
 			}
 			// For agent panes, resolve the JSONL session ID (cached from prev cycle)
 			if pType == "agent" {
+				if agentInfo.Provider == "" {
+					agentInfo = DetectPaneAgentProcess(name, p, process)
+				}
+				provider := agentInfo.Provider
+				if provider == "" {
+					provider = DetectAgentProvider(process)
+				}
+				if provider == "" {
+					provider = AgentProviderFallback
+				}
+				pane.AgentProvider = provider
+				pane.AgentPID = agentInfo.PID
 				if prev, ok := existing[name]; ok {
 					for _, pp := range prev.Panes {
 						if pp.Index == p && pp.AgentSessionID != "" {
@@ -140,8 +179,20 @@ func (m *Monitor) poll() {
 					}
 				}
 				// Resolve if not cached (first discovery or process restarted)
-				if pane.AgentSessionID == "" {
+				if provider == AgentProviderClaude && pane.AgentSessionID == "" {
 					pane.AgentSessionID = GetAgentSessionID(name, p)
+				}
+				cwd := GetAgentPaneCwd(name, p)
+				logPath, confidence := ResolveAgentLogPath(provider, cwd, pane.AgentSessionID)
+				agentObservations[p] = ObservedAgentRun{
+					Provider:       provider,
+					SessionName:    name,
+					PaneIndex:      p,
+					PID:            agentInfo.PID,
+					CWD:            cwd,
+					LogPath:        logPath,
+					Confidence:     confidence,
+					AgentSessionID: pane.AgentSessionID,
 				}
 			}
 			panes = append(panes, pane)
@@ -198,7 +249,33 @@ func (m *Monitor) poll() {
 				}
 			}
 		}
+		if m.agentRuns != nil {
+			for i := range s.Panes {
+				obs, ok := agentObservations[s.Panes[i].Index]
+				if !ok {
+					continue
+				}
+				obs.Status = s.Panes[i].Status
+				if obs.Status == "" {
+					obs.Status = s.Status
+				}
+				run, err := m.agentRuns.UpsertObserved(obs, now.UTC())
+				if err != nil {
+					log.Printf("agent run registry: upsert %s pane %d: %v", s.Name, s.Panes[i].Index, err)
+					continue
+				}
+				s.Panes[i].AgentRunID = run.ID
+				s.Panes[i].AgentProvider = run.Provider
+				s.Panes[i].AgentPID = run.PID
+				seenRuns[run.ID] = true
+			}
+		}
 		updated = append(updated, s)
+	}
+	if m.agentRuns != nil {
+		if err := m.agentRuns.MarkUnseenStopped(seenRuns, now.UTC()); err != nil {
+			log.Printf("agent run registry: mark unseen stopped: %v", err)
+		}
 	}
 	// Collect events to publish AFTER releasing the lock (prevents deadlock
 	// since event handlers may call FindSession/Snapshot which need RLock).
@@ -217,8 +294,8 @@ func (m *Monitor) poll() {
 			}
 			if s.Status == "waiting" {
 				for _, p := range s.Panes {
-					if p.Status == "waiting" {
-						events = append(events, AgentWaitingEvent{Session: s.Name, PaneIndex: p.Index, Prompt: p.Prompt})
+					if p.Status == "waiting" && shouldEmitWaitingEvent(prev, p) {
+						events = append(events, AgentWaitingEvent{Session: s.Name, PaneIndex: p.Index, RunID: p.AgentRunID, Prompt: p.Prompt})
 					}
 				}
 			}
@@ -262,6 +339,21 @@ func (m *Monitor) poll() {
 	for _, e := range events {
 		m.bus.Publish(e)
 	}
+}
+
+func shouldEmitWaitingEvent(prev *Session, pane Pane) bool {
+	if prev == nil {
+		return true
+	}
+	for _, prevPane := range prev.Panes {
+		if prevPane.Index != pane.Index {
+			continue
+		}
+		return prevPane.Status != "waiting" ||
+			canonicalWaitingPrompt(prevPane.Prompt) != canonicalWaitingPrompt(pane.Prompt) ||
+			prevPane.AgentRunID != pane.AgentRunID
+	}
+	return true
 }
 
 func (m *Monitor) notify() {

@@ -24,20 +24,23 @@ type Session struct {
 	Panes        []Pane    `json:"panes"`
 	Diff         *DiffStat `json:"diff,omitempty"`
 	PR           *PRInfo   `json:"pr,omitempty"`
-	PrevContent  string `json:"-"`
-	WorktreePath string `json:"worktreePath,omitempty"`
-	Dir          string `json:"dir,omitempty"`
+	PrevContent  string    `json:"-"`
+	WorktreePath string    `json:"worktreePath,omitempty"`
+	Dir          string    `json:"dir,omitempty"`
 }
 
 // Pane represents a single pane within a tmux session.
 type Pane struct {
 	Index          int    `json:"index"`
-	Type           string `json:"type"`                        // editor, agent, shell, process
+	Type           string `json:"type"` // editor, agent, shell, process
 	Process        string `json:"process"`
 	Status         string `json:"status,omitempty"`
 	Content        string `json:"content,omitempty"`
 	Prompt         string `json:"prompt,omitempty"`
-	AgentSessionID string `json:"agentSessionId,omitempty"`    // Claude Code JSONL session UUID (resolved via lsof)
+	AgentSessionID string `json:"agentSessionId,omitempty"` // Deprecated: Claude Code JSONL session UUID.
+	AgentRunID     string `json:"agentRunId,omitempty"`
+	AgentProvider  string `json:"agentProvider,omitempty"`
+	AgentPID       int    `json:"agentPid,omitempty"`
 }
 
 // DiffStat holds git diff statistics.
@@ -67,7 +70,7 @@ func PaneTypeFromProcess(process string) string {
 		return "shell"
 	default:
 		// Claude Code reports its version (e.g. "2.1.71") as the process name.
-		if isClaudeVersion(process) {
+		if isClaudeVersion(process) || DetectAgentProvider(process) != AgentProviderFallback {
 			return "agent"
 		}
 		return "process"
@@ -122,6 +125,52 @@ func ListSessions() ([]string, error) {
 // GetAgentPaneCwd returns the working directory of a specific pane.
 func GetAgentPaneCwd(session string, pane int) string {
 	return tmuxpkg.GetPaneCwdByIndex(session, pane)
+}
+
+// AgentProcessInfo describes the controllable agent process for a pane.
+type AgentProcessInfo struct {
+	Provider string
+	PID      int
+	Command  string
+}
+
+// DetectPaneAgentProcess resolves the agent process for a tmux pane. It checks
+// the pane process first, then direct shell children for wrapped agent commands.
+func DetectPaneAgentProcess(session string, pane int, paneProcess string) AgentProcessInfo {
+	panePID := GetPanePID(session, pane)
+	provider := DetectAgentProvider(paneProcess)
+	if provider != AgentProviderFallback && panePID != 0 {
+		return AgentProcessInfo{Provider: provider, PID: panePID, Command: paneProcess}
+	}
+	if panePID == 0 {
+		return AgentProcessInfo{Provider: provider, Command: paneProcess}
+	}
+	if child := findAgentProcessInfo(fmt.Sprintf("%d", panePID)); child.Provider != "" {
+		return child
+	}
+	if paneProcess == "aider" {
+		return AgentProcessInfo{Provider: AgentProviderFallback, PID: panePID, Command: paneProcess}
+	}
+	return AgentProcessInfo{Provider: provider, PID: panePID, Command: paneProcess}
+}
+
+// GetPanePID returns the root process ID for a tmux pane.
+func GetPanePID(session string, pane int) int {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidOut, err := pidCmd.Output()
+	if err != nil {
+		return 0
+	}
+	panePid := strings.TrimSpace(string(pidOut))
+	if panePid == "" {
+		return 0
+	}
+	var pid int
+	if _, err := fmt.Sscanf(panePid, "%d", &pid); err != nil {
+		return 0
+	}
+	return pid
 }
 
 // GetAgentSessionID resolves the Claude Code JSONL session UUID for a tmux pane
@@ -209,22 +258,11 @@ func findClaudePid(shellPid string) string {
 	return ""
 }
 
-// hasAgentChild checks if a shell pane has an agent (claude/aider/codex) as a child process.
-func hasAgentChild(session string, pane int) bool {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
-	pidOut, err := pidCmd.Output()
-	if err != nil {
-		return false
-	}
-	panePid := strings.TrimSpace(string(pidOut))
-	if panePid == "" {
-		return false
-	}
-	pgrepCmd := exec.Command("pgrep", "-P", panePid)
+func findAgentProcessInfo(shellPid string) AgentProcessInfo {
+	pgrepCmd := exec.Command("pgrep", "-P", shellPid)
 	pgrepOut, err := pgrepCmd.Output()
 	if err != nil {
-		return false
+		return AgentProcessInfo{}
 	}
 	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
 		pid = strings.TrimSpace(pid)
@@ -237,11 +275,29 @@ func hasAgentChild(session string, pane int) bool {
 			continue
 		}
 		comm := strings.TrimSpace(string(commOut))
-		if comm == "claude" || comm == "aider" || comm == "codex" || isClaudeVersion(comm) {
-			return true
+		provider := DetectAgentProvider(comm)
+		if provider != AgentProviderFallback || comm == "aider" {
+			var pidInt int
+			_, _ = fmt.Sscanf(pid, "%d", &pidInt)
+			return AgentProcessInfo{Provider: provider, PID: pidInt, Command: comm}
 		}
 	}
-	return false
+	return AgentProcessInfo{}
+}
+
+// hasAgentChild checks if a shell pane has an agent (claude/aider/codex) as a child process.
+func hasAgentChild(session string, pane int) bool {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
+	pidOut, err := pidCmd.Output()
+	if err != nil {
+		return false
+	}
+	panePid := strings.TrimSpace(string(pidOut))
+	if panePid == "" {
+		return false
+	}
+	return findAgentProcessInfo(panePid).Provider != ""
 }
 
 // GetPaneProcess returns the current command running in a specific pane.
@@ -286,11 +342,11 @@ func CapturePaneContent(session string, pane int) string {
 			if fallbackErr != nil {
 				return ""
 			}
-			return string(fallbackOut)
+			return StripANSI(string(fallbackOut))
 		}
 		return ""
 	}
-	return string(out)
+	return StripANSI(string(out))
 }
 
 // GitInfo holds git repository metadata for a session.

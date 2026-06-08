@@ -110,9 +110,11 @@ type AgentCrashedEvent struct {
 func (e AgentCrashedEvent) EventType() string { return "agent.crashed" }
 
 type AgentWaitingEvent struct {
-	Session   string
-	PaneIndex int
-	Prompt    string
+	Session    string
+	PaneIndex  int
+	RunID      string
+	QuestionID string
+	Prompt     string
 }
 
 func (e AgentWaitingEvent) EventType() string { return "agent.waiting" }

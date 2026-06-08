@@ -8,7 +8,58 @@ import (
 )
 
 // ansiRe matches ANSI escape sequences (CSI, OSC, and single-char escapes).
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]`)
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]`)
+
+func StripANSI(text string) string {
+	return strings.ReplaceAll(ansiRe.ReplaceAllString(text, ""), "\r", "")
+}
+
+func cleanWaitingPrompt(text string) string {
+	cleaned := StripANSI(text)
+	lines := strings.Split(cleaned, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.TrimRight(line, " \t\u00a0"))
+		if line == "" || isMenuNavigationHelpLine(line) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
+}
+
+func canonicalWaitingPrompt(text string) string {
+	cleaned := cleanWaitingPrompt(text)
+	if cleaned != "" {
+		return canonicalText(cleaned)
+	}
+	if containsMenuNavigationHelp(text) {
+		return "terminal-navigation-help"
+	}
+	return canonicalText(StripANSI(text))
+}
+
+func canonicalText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
+func containsMenuNavigationHelp(text string) bool {
+	for _, line := range strings.Split(StripANSI(text), "\n") {
+		if isMenuNavigationHelpLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMenuNavigationHelpLine(line string) bool {
+	canonical := canonicalText(line)
+	if canonical == "" {
+		return false
+	}
+	return strings.Contains(canonical, "press enter") &&
+		(strings.Contains(canonical, "select") || strings.Contains(canonical, "navigate"))
+}
 
 // InferStatus determines session status from pane content changes.
 // Priority: error > active (content changed) > done (>60s, prompt visible) > idle (>30s) > active
@@ -22,7 +73,7 @@ func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns
 	}
 	for _, pattern := range errorPatterns {
 		for _, line := range tailLines {
-			cleaned := ansiRe.ReplaceAllString(line, "")
+			cleaned := StripANSI(line)
 			if strings.Contains(cleaned, pattern) {
 				return "error"
 			}
@@ -42,7 +93,7 @@ func InferStatus(prev, current string, lastChanged, now time.Time, errorPatterns
 				check = check[len(check)-10:]
 			}
 			for _, line := range check {
-				cleaned := ansiRe.ReplaceAllString(line, "")
+				cleaned := StripANSI(line)
 				cleaned = strings.TrimRight(cleaned, " \t\u00a0")
 				if re.MatchString(cleaned) {
 					return "done"
@@ -82,7 +133,7 @@ func DetectWaitingPanes(panes []Pane, inputPatterns []string) []WaitingPane {
 				continue
 			}
 			for _, line := range check {
-				cleaned := ansiRe.ReplaceAllString(line, "")
+				cleaned := StripANSI(line)
 				if re.MatchString(cleaned) {
 					prompt := lines
 					if len(prompt) > 3 {
@@ -90,7 +141,7 @@ func DetectWaitingPanes(panes []Pane, inputPatterns []string) []WaitingPane {
 					}
 					result = append(result, WaitingPane{
 						Index:  pane.Index,
-						Prompt: strings.Join(prompt, "\n"),
+						Prompt: cleanWaitingPrompt(strings.Join(prompt, "\n")),
 					})
 					matched = true
 					break

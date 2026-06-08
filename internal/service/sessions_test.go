@@ -18,6 +18,7 @@ func TestPaneTypeFromProcess(t *testing.T) {
 		{"claude", "agent"},
 		{"aider", "agent"},
 		{"codex", "agent"},
+		{"codex-aarch64-a", "agent"},
 		{"bash", "shell"},
 		{"zsh", "shell"},
 		{"fish", "shell"},

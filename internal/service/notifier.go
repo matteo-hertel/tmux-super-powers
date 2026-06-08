@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/matteo-hertel/tmux-super-powers/internal/agentlog"
 	"github.com/matteo-hertel/tmux-super-powers/internal/device"
 )
 
@@ -16,29 +19,44 @@ type Notifier struct {
 	deviceStore *device.Store
 	push        *PushClient
 	bus         *Bus
+	agentRuns   *AgentRunRegistry
+	questions   *QuestionRegistry
 
 	mu sync.Mutex
 	// lastNotified tracks the last status we sent a push notification for,
 	// per session. We only send a new notification when the status changes to
 	// something DIFFERENT from what we last notified. This prevents spam when
 	// status flickers (e.g. done → active → done due to terminal content jitter).
-	lastNotified   map[string]string // session name → last notified status
-	lastCINotified map[string]string // session name → last notified CI status
+	lastNotified map[string]string // session name → last notified status
+	lastWaiting  map[string]waitingNotification
 
 	unsub  UnsubscribeFunc
 	stopCh chan struct{}
 }
 
+type waitingNotification struct {
+	QuestionID string
+	Body       string
+	NotifiedAt time.Time
+}
+
+func (n *Notifier) SetAgentContext(agentRuns *AgentRunRegistry, questions *QuestionRegistry) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.agentRuns = agentRuns
+	n.questions = questions
+}
+
 // NewNotifier creates a notifier that watches the given monitor via the event bus.
 func NewNotifier(monitor *Monitor, deviceStore *device.Store, bus *Bus) *Notifier {
 	return &Notifier{
-		monitor:        monitor,
-		deviceStore:    deviceStore,
-		push:           NewPushClient(),
-		bus:            bus,
-		lastNotified:   make(map[string]string),
-		lastCINotified: make(map[string]string),
-		stopCh:         make(chan struct{}),
+		monitor:      monitor,
+		deviceStore:  deviceStore,
+		push:         NewPushClient(),
+		bus:          bus,
+		lastNotified: make(map[string]string),
+		lastWaiting:  make(map[string]waitingNotification),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -67,17 +85,19 @@ func (n *Notifier) handleEvent(e Event) {
 		n.onStatusChanged(ev)
 	case AgentWaitingEvent:
 		n.onAgentWaiting(ev)
-	case CIStatusChangedEvent:
-		n.onCIStatusChanged(ev)
 	case SessionRemovedEvent:
 		n.mu.Lock()
 		delete(n.lastNotified, ev.Name)
-		delete(n.lastCINotified, ev.Name)
 		n.mu.Unlock()
+		n.clearWaitingNotifications(ev.Name)
 	}
 }
 
 func (n *Notifier) onStatusChanged(ev StatusChangedEvent) {
+	if shouldClearWaitingNotifications(ev.From, ev.To) {
+		n.clearWaitingNotifications(ev.Session)
+	}
+
 	tokens := n.deviceStore.PushTokens()
 	if len(tokens) == 0 {
 		return
@@ -92,7 +112,8 @@ func (n *Notifier) onStatusChanged(ev StatusChangedEvent) {
 
 	switch ev.To {
 	case "done":
-		if ev.From != "active" && ev.From != "idle" && ev.From != "waiting" && ev.From != "error" {
+		run, hasRun := n.latestRunForSession(ev.Session)
+		if !shouldNotifyDone(ev.From, run, hasRun, time.Now().UTC()) {
 			return
 		}
 		s := n.monitor.FindSession(ev.Session)
@@ -111,6 +132,11 @@ func (n *Notifier) onStatusChanged(ev StatusChangedEvent) {
 				"status":      "done",
 			},
 		}
+		if hasRun {
+			msg.Data["runId"] = run.ID
+			msg.Data["paneIndex"] = strconv.Itoa(run.PaneIndex)
+			msg.Data["provider"] = run.Provider
+		}
 	}
 
 	if msg == nil {
@@ -128,6 +154,21 @@ func (n *Notifier) onStatusChanged(ev StatusChangedEvent) {
 	n.sendToAll(tokens, msg)
 }
 
+const doneNotificationRunWindow = 5 * time.Minute
+
+func shouldNotifyDone(from string, run AgentRun, hasRun bool, now time.Time) bool {
+	if from != "active" && from != "waiting" && from != "error" {
+		return false
+	}
+	if !hasRun || run.ID == "" || run.LastSeenAt.IsZero() {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Sub(run.LastSeenAt) <= doneNotificationRunWindow
+}
+
 func (n *Notifier) onAgentWaiting(ev AgentWaitingEvent) {
 	tokens := n.deviceStore.PushTokens()
 	if len(tokens) == 0 {
@@ -138,19 +179,46 @@ func (n *Notifier) onAgentWaiting(ev AgentWaitingEvent) {
 	}
 
 	body := "Agent needs your input"
-	if ev.Prompt != "" {
-		body = ev.Prompt
+	if prompt := cleanWaitingPrompt(ev.Prompt); prompt != "" {
+		body = prompt
 		if len(body) > 150 {
 			body = body[:150]
 		}
 	}
 
+	runID := ev.RunID
+	provider := ""
+	if runID == "" {
+		if run, ok := n.runForPane(ev.Session, ev.PaneIndex); ok {
+			runID = run.ID
+			provider = run.Provider
+		}
+	} else if run, ok := n.runByID(runID); ok {
+		provider = run.Provider
+	}
+	questionID := ev.QuestionID
+	if questionID == "" && runID != "" && n.questions != nil {
+		n.refreshQuestionsForRun(runID)
+		if q, ok := n.questions.LatestForRun(runID); ok {
+			questionID = q.ID
+			if prompt := cleanWaitingPrompt(q.Prompt); prompt != "" {
+				body = prompt
+				if len(body) > 150 {
+					body = body[:150]
+				}
+			}
+		}
+	}
+	if questionID == "" {
+		return
+	}
+
+	notifyKey := waitingNotificationKey(ev.Session, ev.PaneIndex, runID)
 	n.mu.Lock()
-	if n.lastNotified[ev.Session] == "waiting" {
+	if !shouldSendWaitingNotification(n.lastWaiting, notifyKey, questionID, body, time.Now().UTC()) {
 		n.mu.Unlock()
 		return
 	}
-	n.lastNotified[ev.Session] = "waiting"
 	n.mu.Unlock()
 
 	msg := &PushMessage{
@@ -162,51 +230,124 @@ func (n *Notifier) onAgentWaiting(ev AgentWaitingEvent) {
 		Data: map[string]string{
 			"type":        "status_change",
 			"sessionName": ev.Session,
+			"paneIndex":   strconv.Itoa(ev.PaneIndex),
 			"status":      "waiting",
 		},
+	}
+	if runID != "" {
+		msg.Data["runId"] = runID
+	}
+	if provider != "" {
+		msg.Data["provider"] = provider
+	}
+	if questionID != "" {
+		msg.Data["questionId"] = questionID
 	}
 	n.sendToAll(tokens, msg)
 }
 
-func (n *Notifier) onCIStatusChanged(ev CIStatusChangedEvent) {
-	tokens := n.deviceStore.PushTokens()
-	if len(tokens) == 0 {
-		return
+func shouldClearWaitingNotifications(from, to string) bool {
+	if from != "waiting" || to == "waiting" {
+		return false
 	}
+	return to == "done" || to == "error"
+}
 
-	if ev.To == "fail" {
-		n.mu.Lock()
-		if n.lastCINotified[ev.Session] == "fail" {
-			n.mu.Unlock()
-			return
-		}
-		n.lastCINotified[ev.Session] = "fail"
-		n.mu.Unlock()
+func waitingNotificationKey(session string, paneIndex int, runID string) string {
+	return fmt.Sprintf("%s:%d:%s", session, paneIndex, runID)
+}
 
-		msg := &PushMessage{
-			To:         "",
-			Title:      fmt.Sprintf("CI failing: %s", ev.Session),
-			Body:       fmt.Sprintf("PR #%d checks failing", ev.PRNumber),
-			Sound:      "default",
-			Priority:   "high",
-			CategoryID: "error",
-			Data: map[string]string{
-				"type":        "ci_fail",
-				"sessionName": ev.Session,
-			},
-		}
-		n.sendToAll(tokens, msg)
+func shouldSendWaitingNotification(last map[string]waitingNotification, key, questionID, body string, now time.Time) bool {
+	if questionID == "" {
+		return false
 	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if prev, ok := last[key]; ok {
+		if prev.QuestionID == questionID {
+			return false
+		}
+	}
+	last[key] = waitingNotification{QuestionID: questionID, Body: body, NotifiedAt: now}
+	return true
+}
 
-	// When CI recovers, clear so a future failure can re-notify.
-	if ev.From == "fail" && ev.To != "fail" {
-		n.mu.Lock()
-		delete(n.lastCINotified, ev.Session)
-		n.mu.Unlock()
+func (n *Notifier) clearWaitingNotifications(session string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	prefix := session + ":"
+	for key := range n.lastWaiting {
+		if strings.HasPrefix(key, prefix) {
+			delete(n.lastWaiting, key)
+		}
 	}
 }
 
+func (n *Notifier) runForPane(session string, paneIndex int) (AgentRun, bool) {
+	n.mu.Lock()
+	reg := n.agentRuns
+	n.mu.Unlock()
+	if reg == nil {
+		return AgentRun{}, false
+	}
+	return reg.FindByPane(session, paneIndex)
+}
+
+func (n *Notifier) runByID(runID string) (AgentRun, bool) {
+	n.mu.Lock()
+	reg := n.agentRuns
+	n.mu.Unlock()
+	if reg == nil {
+		return AgentRun{}, false
+	}
+	return reg.Find(runID)
+}
+
+func (n *Notifier) refreshQuestionsForRun(runID string) {
+	if n.questions == nil {
+		return
+	}
+	run, ok := n.runByID(runID)
+	if !ok || run.LogPath == "" {
+		return
+	}
+	resp, err := agentlog.ReadRunLog(agentlog.RunLogRef{
+		ID:             run.ID,
+		Provider:       run.Provider,
+		CWD:            run.CWD,
+		LogPath:        run.LogPath,
+		AgentSessionID: run.AgentSessionID,
+	}, 0)
+	if err != nil {
+		return
+	}
+	n.questions.RefreshFromLog(run, resp.Chunks, time.Now().UTC())
+}
+
+func (n *Notifier) latestRunForSession(session string) (AgentRun, bool) {
+	n.mu.Lock()
+	reg := n.agentRuns
+	n.mu.Unlock()
+	if reg == nil {
+		return AgentRun{}, false
+	}
+	for _, run := range reg.ListBySession(session) {
+		if run.Status != "stopped" {
+			return run, true
+		}
+	}
+	runs := reg.ListBySession(session)
+	if len(runs) == 0 {
+		return AgentRun{}, false
+	}
+	return runs[0], true
+}
+
 func (n *Notifier) sendToAll(tokens []string, msg *PushMessage) {
+	if msg == nil || !automaticNotifierCategoryAllowed(msg.CategoryID) {
+		return
+	}
 	var messages []PushMessage
 	for _, token := range tokens {
 		m := *msg
@@ -218,6 +359,10 @@ func (n *Notifier) sendToAll(tokens []string, msg *PushMessage) {
 			log.Printf("push notification error: %v", err)
 		}
 	}()
+}
+
+func automaticNotifierCategoryAllowed(category string) bool {
+	return category == "waiting" || category == "done"
 }
 
 // sessionHasAttachedClient returns true if any tmux client is attached to the session.

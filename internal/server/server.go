@@ -30,6 +30,8 @@ type Server struct {
 	monitor        *service.Monitor
 	notifier       *service.Notifier
 	watcher        *service.Watcher
+	agentRuns      *service.AgentRunRegistry
+	questions      *service.QuestionRegistry
 	upgrader       websocket.Upgrader
 	httpSrv        *http.Server
 	deviceStore    *device.Store
@@ -38,6 +40,8 @@ type Server struct {
 	authMiddleware *auth.Middleware
 	bindAddr       string
 	port           int
+	sendToPane     func(session string, pane int, text string) error
+	answerFreeText func(session string, pane int, optionCount int, text string) error
 }
 
 // New creates a new API server.
@@ -53,6 +57,11 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 	authMiddleware := auth.NewMiddleware(adminToken, deviceStore)
 
 	bus := service.NewBus()
+	agentRuns, err := service.NewAgentRunRegistry(filepath.Join(tspDir, "agent-runs.json"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load agent run registry: %w", err)
+	}
+	questions := service.NewQuestionRegistry()
 	srv := &Server{
 		cfg: cfg,
 		bus: bus,
@@ -70,8 +79,14 @@ func New(cfg *config.Config, tspDir string) (*Server, error) {
 		pairing:        pairing,
 		adminToken:     adminToken,
 		authMiddleware: authMiddleware,
+		agentRuns:      agentRuns,
+		questions:      questions,
+		sendToPane:     service.SendToPane,
+		answerFreeText: service.AnswerPaneFreeText,
 	}
+	srv.monitor.SetAgentRunRegistry(agentRuns)
 	srv.notifier = service.NewNotifier(srv.monitor, srv.deviceStore, bus)
+	srv.notifier.SetAgentContext(agentRuns, questions)
 	srv.watcher = service.NewWatcher(bus, cfg.Watcher)
 	srv.watcher.SetMonitor(srv.monitor)
 	return srv, nil
@@ -128,6 +143,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("DELETE /api/sessions/{name}", s.handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{name}/send", s.handleSendToPane)
+	mux.HandleFunc("GET /api/sessions/{name}/agent-runs", s.handleSessionAgentRuns)
 
 	// Spawn
 	mux.HandleFunc("POST /api/spawn", s.handleSpawn)
@@ -144,6 +160,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Agent log
 	mux.HandleFunc("GET /api/sessions/{name}/agent-log", s.handleGetAgentLog)
+	mux.HandleFunc("GET /api/agent-runs/{runId}/log", s.handleGetAgentRunLog)
+
+	// Semantic questions
+	mux.HandleFunc("GET /api/questions/pending", s.handlePendingQuestions)
+	mux.HandleFunc("POST /api/questions/{questionId}/answer", s.handleAnswerQuestion)
 
 	// Device management
 	mux.HandleFunc("PUT /api/devices/push-token", s.handleRegisterPushToken)

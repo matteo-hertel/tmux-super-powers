@@ -70,6 +70,7 @@ type SpawnResult struct {
 	Error        string `json:"error,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
 	GitPath      string `json:"gitPath,omitempty"`
+	AgentRunID   string `json:"agentRunId,omitempty"`
 }
 
 // SpawnAgents deploys agents with tasks into worktrees (git repos) or
