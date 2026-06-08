@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	duckpkg "github.com/matteo-hertel/tmux-super-powers/internal/duck"
-	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -35,9 +34,7 @@ func init() {
 	duckCmd.AddCommand(duckNewCmd)
 	duckCmd.AddCommand(duckCookCmd)
 	duckCmd.Flags().Bool("daemon", false, "Run duck daemon (internal)")
-	duckCmd.Flags().Bool("viewer", false, "Run duck viewer (internal)")
 	duckCmd.Flags().MarkHidden("daemon")
-	duckCmd.Flags().MarkHidden("viewer")
 	duckCookCmd.Flags().Bool("all", false, "Cook all ducks")
 }
 
@@ -51,22 +48,8 @@ func runDuck(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	viewerFlag, _ := cmd.Flags().GetBool("viewer")
-	if viewerFlag {
-		if err := duckpkg.RunViewer(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error running duck viewer: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if !tmuxpkg.IsInsideTmux() {
-		fmt.Fprintln(os.Stderr, "Duck pond requires tmux. Run inside a tmux session.")
-		os.Exit(1)
-	}
-
-	if err := tmuxpkg.RunPopup("tsp duck --viewer", 75, 75, false); err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening duck pond: %v\n", err)
+	if err := duckpkg.RunViewer(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running duck viewer: %v\n", err)
 		os.Exit(1)
 	}
 }
