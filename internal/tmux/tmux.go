@@ -158,6 +158,45 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 	return nil
 }
 
+// CreateThreePaneSession creates a session with a full-height left pane and a
+// right column split into a top and bottom pane:
+//
+//	┌──────────┬───────────┐
+//	│          │ topRight  │
+//	│   left   ├───────────┤
+//	│          │ botRight  │
+//	└──────────┴───────────┘
+//
+// Used by spawn to show install (top-right) and the agent (bottom-right)
+// alongside the editor.
+func CreateThreePaneSession(name, dir, leftCmd, topRightCmd, botRightCmd string) error {
+	args := BuildNewSessionArgs(name, dir, leftCmd)
+	if err := exec.Command("tmux", args...).Run(); err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+
+	// Split off the right column from the left pane (becomes the active pane).
+	rightSplit := []string{"split-window", "-h", "-t", name + ":0.0", "-c", dir}
+	if topRightCmd != "" {
+		rightSplit = append(rightSplit, topRightCmd)
+	}
+	if err := exec.Command("tmux", rightSplit...).Run(); err != nil {
+		return fmt.Errorf("failed to split right column: %w", err)
+	}
+
+	// Split the active (right) pane vertically for the bottom-right command.
+	botSplit := []string{"split-window", "-v", "-t", name, "-c", dir}
+	if botRightCmd != "" {
+		botSplit = append(botSplit, botRightCmd)
+	}
+	if err := exec.Command("tmux", botSplit...).Run(); err != nil {
+		return fmt.Errorf("failed to split bottom-right pane: %w", err)
+	}
+
+	exec.Command("tmux", "select-pane", "-t", name+":0.0").Run()
+	return nil
+}
+
 // GetPaneCwd returns the current working directory of a session's first pane.
 func GetPaneCwd(session string) string {
 	return GetPaneCwdByIndex(session, 0)

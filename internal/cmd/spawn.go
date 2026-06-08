@@ -127,18 +127,16 @@ Examples:
 				fmt.Printf("      ✓ worktree created\n")
 			}
 
-			// Build the agent pane command. Dependency install and any setup
-			// run *inside* the pane so `tsp spawn` returns immediately instead
-			// of blocking on a multi-minute install. The agent launches once
-			// they finish, with the task passed as a CLI argument (no send-keys).
-			rightCmd := agentCmd + " " + shellQuoteArg(task)
+			// Agent launch command (task passed as a CLI arg — no send-keys).
+			agentLaunch := agentCmd + " " + shellQuoteArg(task)
 			if setup != "" {
-				rightCmd = setup + " && " + rightCmd
+				agentLaunch = setup + " && " + agentLaunch
 			}
+
+			installCmd := ""
 			if !noInstall {
 				if pm := detectPackageManager(repoRoot); pm != "" {
-					rightCmd = pm + " install && " + rightCmd
-					fmt.Printf("      ◌ %s install will run in the agent pane\n", pm)
+					installCmd = pm + " install"
 				}
 			}
 
@@ -146,8 +144,20 @@ Examples:
 			if tmuxpkg.SessionExists(sessionName) {
 				tmuxpkg.KillSession(sessionName)
 			}
-			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", rightCmd)
-			fmt.Printf("      ✓ session created — deps + agent starting in pane\n\n")
+			if installCmd != "" {
+				// Three panes: nvim (left), install (top-right), agent
+				// (bottom-right). Install runs non-blocking in its own pane; the
+				// agent waits on a tmux wait-for channel and launches once install
+				// finishes. tsp spawn returns as soon as the panes exist.
+				ch := "tsp-install-" + sessionName
+				installPane := installCmd + "; tmux wait-for -S " + ch + "; exec $SHELL"
+				agentPane := "tmux wait-for " + ch + "; " + agentLaunch
+				tmuxpkg.CreateThreePaneSession(sessionName, worktreePath, "nvim", installPane, agentPane)
+				fmt.Printf("      ✓ session created — install (top-right) + agent (bottom-right)\n\n")
+			} else {
+				tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentLaunch)
+				fmt.Printf("      ✓ session created — agent starting in pane\n\n")
+			}
 		}
 
 		if dryRun {

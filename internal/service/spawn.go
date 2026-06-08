@@ -136,20 +136,30 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		}
 
 		// Pass the task as a CLI argument to the agent command so it starts
-		// working immediately — avoids all send-keys/Enter issues. Dependency
-		// install runs *inside* the pane (non-blocking) so spawning returns
-		// fast; the agent launches once install finishes.
-		agentWithTask := agentCmd + " " + shellQuote(task)
+		// working immediately — avoids all send-keys/Enter issues.
+		agentLaunch := agentCmd + " " + shellQuote(task)
+
+		installCmd := ""
 		if !noInstall {
 			if pm := spawnDetectPM(repoRoot); pm != "" {
-				agentWithTask = pm + " install && " + agentWithTask
+				installCmd = pm + " install"
 			}
 		}
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentWithTask)
+		if installCmd != "" {
+			// Three panes: nvim (left), install (top-right), agent (bottom-right).
+			// Install runs non-blocking in its own pane; the agent waits on a tmux
+			// wait-for channel and launches once install finishes.
+			ch := "tsp-install-" + sessionName
+			installPane := installCmd + "; tmux wait-for -S " + ch + "; exec $SHELL"
+			agentPane := "tmux wait-for " + ch + "; " + agentLaunch
+			tmuxpkg.CreateThreePaneSession(sessionName, worktreePath, "nvim", installPane, agentPane)
+		} else {
+			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentLaunch)
+		}
 
 		result.Status = "ok"
 		results = append(results, result)
