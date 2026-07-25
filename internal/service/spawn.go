@@ -75,7 +75,8 @@ type SpawnResult struct {
 
 // SpawnAgents deploys agents with tasks into worktrees (git repos) or
 // directly in the target directory (non-git directories).
-// If repoDir is non-empty, it is used to find the git repo root; otherwise the server's cwd is used.
+// If repoDir is non-empty, it is used to find the git repo root; otherwise the
+// current working directory is used.
 func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.Config, repoDir string) ([]SpawnResult, error) {
 	var repoRoot string
 	var err error
@@ -135,30 +136,26 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			}
 		}
 
-		// Pass the task as a CLI argument to the agent command so it starts
-		// working immediately — avoids all send-keys/Enter issues.
-		agentLaunch := agentCmd + " " + shellQuote(task)
-
-		installCmd := ""
-		if !noInstall {
-			if pm := spawnDetectPM(repoRoot); pm != "" {
-				installCmd = pm + " install"
+		if cfg.Spawn.DefaultSetup != "" {
+			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, worktreePath); err != nil {
+				result.Status = "error"
+				result.Error = fmt.Sprintf("setup failed: %v", err)
+				results = append(results, result)
+				continue
 			}
 		}
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		if installCmd != "" {
-			// Three panes: nvim (left), install (top-right), agent (bottom-right).
-			// Install runs non-blocking in its own pane; the agent waits on a tmux
-			// wait-for channel and launches once install finishes.
-			ch := "tsp-install-" + sessionName
-			installPane := installCmd + "; tmux wait-for -S " + ch + "; exec $SHELL"
-			agentPane := "tmux wait-for " + ch + "; " + agentLaunch
-			tmuxpkg.CreateThreePaneSession(sessionName, worktreePath, "nvim", installPane, agentPane)
-		} else {
-			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentLaunch)
+		// Pass the task as a CLI argument to the agent command so it starts
+		// working immediately — avoids all send-keys/Enter issues.
+		agentWithTask := agentCmd + " " + shellQuote(task)
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentWithTask); err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("session creation failed: %v", err)
+			results = append(results, result)
+			continue
 		}
 
 		result.Status = "ok"
@@ -187,6 +184,15 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 			tmuxpkg.KillSession(sessionName)
 		}
 
+		if cfg.Spawn.DefaultSetup != "" {
+			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, dir); err != nil {
+				result.Status = "error"
+				result.Error = fmt.Sprintf("setup failed: %v", err)
+				results = append(results, result)
+				continue
+			}
+		}
+
 		agentWithTask := agentCmd + " " + shellQuote(task)
 		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", agentWithTask); err != nil {
 			result.Status = "error"
@@ -197,6 +203,12 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 	}
 
 	return results, nil
+}
+
+func spawnRunSetup(command, dir string) error {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
+	return cmd.Run()
 }
 
 func spawnGetRepoRoot() (string, error) {
@@ -285,4 +297,3 @@ func spawnCopyNodeModules(repoRoot, worktreePath string) error {
 		return os.Link(path, dst)
 	})
 }
-

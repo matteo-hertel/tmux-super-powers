@@ -3,33 +3,28 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/matteo-hertel/tmux-super-powers/config"
-	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
+	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn [flags] task1 task2 ...",
-	Short: "Deploy multiple AI agents in parallel worktrees",
-	Long: `Create worktrees with tmux sessions for each task and send the task prompt to claude.
+	Short: "Spawn coding agents in isolated worktrees",
+	Long: `Create one tmux-hosted coding agent per task.
 
-Each task gets:
-1. A branch auto-named from the task description (spawn/fix-auth-bug)
-2. A git worktree
-3. A tmux session with nvim (left) + claude (right)
-
-Dependency install (and any --setup command) runs inside the agent pane, so
-spawn returns immediately; the agent launches with the task as its prompt once
-install finishes. Use --no-install to skip it.
+Git repositories get a unique branch and worktree for every agent. Other
+directories get isolated tmux sessions without a worktree. Agents are recorded
+in the local roster used by tsp dash.
 
 Examples:
-  tsp spawn "fix the auth bug" "add dark mode" "refactor db layer"
-  tsp spawn --file tasks.txt
+  tsp spawn "fix the auth bug" "add dark mode"
+  tsp spawn --agent "codex --full-auto" "refactor the parser"
+  tsp spawn --dir ~/code/project --file tasks.txt
   tsp spawn --base main --dash "implement user avatars"
   tsp spawn --dry-run "test task"`,
 	Args: cobra.ArbitraryArgs,
@@ -40,13 +35,9 @@ Examples:
 		setup, _ := cmd.Flags().GetString("setup")
 		noInstall, _ := cmd.Flags().GetBool("no-install")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		repoDir, _ := cmd.Flags().GetString("dir")
+		agentCommand, _ := cmd.Flags().GetString("agent")
 
-		if !isGitRepo() {
-			fmt.Fprintf(os.Stderr, "Error: not a git repository\n")
-			os.Exit(1)
-		}
-
-		// Collect tasks
 		var tasks []string
 		if taskFile != "" {
 			data, err := os.ReadFile(taskFile)
@@ -57,125 +48,91 @@ Examples:
 			tasks = parseTaskFile(string(data))
 		}
 		tasks = append(tasks, args...)
-
 		if len(tasks) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: no tasks provided\n")
+			fmt.Fprintln(os.Stderr, "Error: no tasks provided")
 			os.Exit(1)
 		}
 
-		// Resolve base branch
-		if baseBranch == "" {
+		if repoDir == "" {
 			var err error
-			baseBranch, err = getCurrentBranch()
+			repoDir, err = os.Getwd()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: cannot determine current branch: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error determining current directory: %v\n", err)
 				os.Exit(1)
 			}
 		}
+		repoDir, _ = filepath.Abs(repoDir)
 
-		repoRoot, err := getRepoRoot()
+		cfg, err := config.Load()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot determine repo root: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 			os.Exit(1)
 		}
-		repoName := filepath.Base(repoRoot)
-
-		cfg, _ := config.Load()
-		worktreeBase := pathutil.ExpandPath(cfg.Spawn.WorktreeBase)
-		agentCmd := cfg.Spawn.AgentCommand
-		if setup == "" {
-			setup = cfg.Spawn.DefaultSetup
+		if setup != "" {
+			cfg.Spawn.DefaultSetup = setup
 		}
-
-		fmt.Printf("Spawning %d agents from branch %s...\n\n", len(tasks), baseBranch)
-
-		for i, task := range tasks {
-			branch := taskToBranch(task)
-			branchShort := strings.TrimPrefix(branch, "spawn/")
-			sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branchShort))
-			worktreePath := filepath.Join(worktreeBase, fmt.Sprintf("%s-%s", repoName, branchShort))
-
-			fmt.Printf("[%d/%d] %s\n", i+1, len(tasks), branchShort)
-
-			if dryRun {
-				fmt.Printf("      branch:    %s\n", branch)
-				fmt.Printf("      worktree:  %s\n", worktreePath)
-				fmt.Printf("      session:   %s\n", sessionName)
-				fmt.Printf("      prompt:    %s\n\n", task)
-				continue
-			}
-
-			// Create branch
-			if !branchExists(branch) {
-				if err := createBranch(branch, baseBranch); err != nil {
-					fmt.Printf("      ✗ branch creation failed: %v\n", err)
-					continue
-				}
-				fmt.Printf("      ✓ branch created\n")
-			} else {
-				fmt.Printf("      ✓ branch exists\n")
-			}
-
-			// Create worktree
-			if _, err := os.Stat(worktreePath); err == nil {
-				fmt.Printf("      ✓ worktree exists at %s\n", worktreePath)
-			} else {
-				if err := createWorktree(worktreePath, branch); err != nil {
-					fmt.Printf("      ✗ worktree creation failed: %v\n", err)
-					continue
-				}
-				fmt.Printf("      ✓ worktree created\n")
-			}
-
-			// Agent launch command (task passed as a CLI arg — no send-keys).
-			agentLaunch := agentCmd + " " + shellQuoteArg(task)
-			if setup != "" {
-				agentLaunch = setup + " && " + agentLaunch
-			}
-
-			installCmd := ""
-			if !noInstall {
-				if pm := detectPackageManager(repoRoot); pm != "" {
-					installCmd = pm + " install"
-				}
-			}
-
-			// Create tmux session
-			if tmuxpkg.SessionExists(sessionName) {
-				tmuxpkg.KillSession(sessionName)
-			}
-			if installCmd != "" {
-				// Three panes: nvim (left), install (top-right), agent
-				// (bottom-right). Install runs non-blocking in its own pane; the
-				// agent waits on a tmux wait-for channel and launches once install
-				// finishes. tsp spawn returns as soon as the panes exist.
-				ch := "tsp-install-" + sessionName
-				installPane := installCmd + "; tmux wait-for -S " + ch + "; exec $SHELL"
-				agentPane := "tmux wait-for " + ch + "; " + agentLaunch
-				tmuxpkg.CreateThreePaneSession(sessionName, worktreePath, "nvim", installPane, agentPane)
-				fmt.Printf("      ✓ session created — install (top-right) + agent (bottom-right)\n\n")
-			} else {
-				tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentLaunch)
-				fmt.Printf("      ✓ session created — agent starting in pane\n\n")
-			}
+		if agentCommand != "" {
+			cfg.Spawn.AgentCommand = agentCommand
 		}
 
 		if dryRun {
-			fmt.Println("Dry run complete. No changes made.")
+			fmt.Printf("Would spawn %d agent(s)\n", len(tasks))
+			fmt.Printf("  project: %s\n", repoDir)
+			fmt.Printf("  base:    %s\n", firstNonEmpty(baseBranch, "current branch"))
+			fmt.Printf("  command: %s\n", cfg.Spawn.AgentCommand)
+			for index, task := range tasks {
+				fmt.Printf("  %d. %s\n", index+1, task)
+			}
+			fmt.Println("Each agent receives a unique spawn/* branch, worktree, and tmux session.")
 			return
 		}
 
-		fmt.Printf("All %d agents deployed.", len(tasks))
-		if openDash {
-			fmt.Println(" Opening dashboard...")
-			dashExec := exec.Command(os.Args[0], "dash")
-			dashExec.Stdin = os.Stdin
-			dashExec.Stdout = os.Stdout
-			dashExec.Stderr = os.Stderr
-			dashExec.Run()
-		} else {
-			fmt.Println(" Run `tsp dash` to monitor.")
+		fmt.Printf("Spawning %d agent(s) with %s…\n\n", len(tasks), cfg.Spawn.AgentCommand)
+		results, err := service.SpawnAgents(tasks, baseBranch, noInstall, cfg, repoDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error spawning agents: %v\n", err)
+			os.Exit(1)
 		}
+
+		registry, err := service.NewAgentRunRegistry(filepath.Join(config.TspDir(), "agent-runs.json"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading agent registry: %v\n", err)
+			os.Exit(1)
+		}
+		provider := providerFromCommand(cfg.Spawn.AgentCommand)
+		failures := 0
+		for _, result := range results {
+			if result.Status != "ok" {
+				failures++
+				fmt.Printf("✗ %s\n  %s\n", result.Task, result.Error)
+				continue
+			}
+			run, registerErr := registry.RegisterManaged(result, provider, 1, time.Now().UTC())
+			if registerErr != nil {
+				failures++
+				fmt.Printf("✗ %s\n  registry: %v\n", result.Task, registerErr)
+				continue
+			}
+			fmt.Printf("✓ %s\n", result.Task)
+			fmt.Printf("  session: %s\n", result.Session)
+			if result.Branch != "" {
+				fmt.Printf("  branch:  %s\n", result.Branch)
+			}
+			fmt.Printf("  run:     %s\n\n", run.ID)
+		}
+		if failures > 0 {
+			fmt.Fprintf(os.Stderr, "%d agent(s) failed to start\n", failures)
+		}
+
+		if openDash {
+			if !tmuxpkg.IsInsideTmux() {
+				fmt.Println("Dashboard requires tmux; run `tsp dash` from a tmux session.")
+				return
+			}
+			dashCmd.Run(cmd, nil)
+			return
+		}
+		fmt.Println("Run `tsp dash` to manage the roster.")
 	},
 }
 
@@ -188,8 +145,10 @@ func shellQuoteArg(s string) string {
 func init() {
 	spawnCmd.Flags().StringP("file", "f", "", "Read tasks from file (one per line)")
 	spawnCmd.Flags().StringP("base", "b", "", "Base branch for worktrees (default: current branch)")
-	spawnCmd.Flags().Bool("dash", false, "Open tsp dash after deploying all agents")
-	spawnCmd.Flags().String("setup", "", "Command to run in each worktree after install")
+	spawnCmd.Flags().StringP("dir", "C", "", "Project directory (default: current directory)")
+	spawnCmd.Flags().String("agent", "", "Override the configured agent command")
+	spawnCmd.Flags().Bool("dash", false, "Open tsp dash after spawning")
+	spawnCmd.Flags().String("setup", "", "Command to run in each worktree before the agent starts")
 	spawnCmd.Flags().Bool("no-install", false, "Skip dependency installation")
 	spawnCmd.Flags().Bool("dry-run", false, "Show what would be created without doing it")
 }

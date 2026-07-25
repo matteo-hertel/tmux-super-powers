@@ -38,7 +38,7 @@ var listCmd = &cobra.Command{
 		delegate.SetHeight(1)
 		delegate.SetSpacing(0)
 		delegate.ShowDescription = false
-		
+
 		m := sessionModel{
 			list: list.New(items, delegate, 0, 0),
 		}

@@ -46,7 +46,7 @@ For each branch:
 
 		for _, branch := range branches {
 			fmt.Printf("Processing branch: %s\n", branch)
-			
+
 			if !branchExists(branch) {
 				fmt.Printf("Branch '%s' does not exist. Creating it from '%s'...\n", branch, currentBranch)
 				if err := createBranch(branch, currentBranch); err != nil {

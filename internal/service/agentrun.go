@@ -11,48 +11,41 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/matteo-hertel/tmux-super-powers/internal/agentlog"
 )
 
 const (
 	AgentProviderClaude   = "claude"
 	AgentProviderCodex    = "codex"
 	AgentProviderFallback = "fallback"
-
-	AgentConfidenceHigh   = "high"
-	AgentConfidenceMedium = "medium"
-	AgentConfidenceLow    = "low"
 )
 
 // AgentRun is the durable identity for one controllable agent pane.
 type AgentRun struct {
-	ID             string    `json:"id"`
-	Provider       string    `json:"provider"`
-	SessionName    string    `json:"sessionName"`
-	TmuxSession    string    `json:"tmuxSession,omitempty"`
-	PaneIndex      int       `json:"paneIndex"`
-	PID            int       `json:"pid,omitempty"`
-	CWD            string    `json:"cwd,omitempty"`
-	LogPath        string    `json:"logPath,omitempty"`
-	Status         string    `json:"status"`
-	StartedAt      time.Time `json:"startedAt"`
-	LastSeenAt     time.Time `json:"lastSeenAt"`
-	Confidence     string    `json:"confidence"`
-	AgentSessionID string    `json:"agentSessionId,omitempty"`
+	ID           string    `json:"id"`
+	Provider     string    `json:"provider"`
+	Task         string    `json:"task,omitempty"`
+	SessionName  string    `json:"sessionName"`
+	PaneIndex    int       `json:"paneIndex"`
+	PID          int       `json:"pid,omitempty"`
+	CWD          string    `json:"cwd,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
+	WorktreePath string    `json:"worktreePath,omitempty"`
+	GitPath      string    `json:"gitPath,omitempty"`
+	Status       string    `json:"status"`
+	StartedAt    time.Time `json:"startedAt"`
+	LastSeenAt   time.Time `json:"lastSeenAt"`
+	Managed      bool      `json:"managed,omitempty"`
 }
 
-// ObservedAgentRun is a monitor observation used to create or refresh a run.
+// ObservedAgentRun is an on-demand process observation used to create or
+// refresh a run.
 type ObservedAgentRun struct {
-	Provider       string
-	SessionName    string
-	PaneIndex      int
-	PID            int
-	CWD            string
-	LogPath        string
-	Status         string
-	Confidence     string
-	AgentSessionID string
+	Provider    string
+	SessionName string
+	PaneIndex   int
+	PID         int
+	CWD         string
+	Status      string
 }
 
 type agentRunFile struct {
@@ -89,9 +82,6 @@ func NewAgentRunRegistry(path string) (*AgentRunRegistry, error) {
 		if run.ID == "" {
 			continue
 		}
-		if run.TmuxSession == "" {
-			run.TmuxSession = run.SessionName
-		}
 		reg.runs[run.ID] = run
 	}
 	return reg, nil
@@ -113,7 +103,6 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 			ID:          id,
 			StartedAt:   now,
 			SessionName: obs.SessionName,
-			TmuxSession: obs.SessionName,
 			PaneIndex:   obs.PaneIndex,
 		}
 	}
@@ -121,17 +110,11 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 	run := r.runs[id]
 	run.Provider = obs.Provider
 	run.SessionName = obs.SessionName
-	run.TmuxSession = obs.SessionName
 	run.PaneIndex = obs.PaneIndex
 	run.PID = obs.PID
 	run.CWD = obs.CWD
-	if obs.LogPath != "" || run.LogPath == "" {
-		run.LogPath = obs.LogPath
-	}
 	run.Status = obs.Status
 	run.LastSeenAt = now
-	run.Confidence = obs.Confidence
-	run.AgentSessionID = obs.AgentSessionID
 	r.runs[id] = run
 
 	return run, r.saveLocked()
@@ -144,9 +127,6 @@ func normalizeObservedRun(obs ObservedAgentRun) ObservedAgentRun {
 	if obs.Status == "" {
 		obs.Status = "active"
 	}
-	if obs.Confidence == "" {
-		obs.Confidence = AgentConfidenceLow
-	}
 	return obs
 }
 
@@ -156,7 +136,7 @@ func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 		if run.SessionName != obs.SessionName || run.PaneIndex != obs.PaneIndex {
 			continue
 		}
-		if obs.PID != 0 && run.PID != obs.PID {
+		if obs.PID != 0 && run.PID != 0 && run.PID != obs.PID {
 			continue
 		}
 		if obs.PID == 0 && run.Provider != obs.Provider {
@@ -167,6 +147,68 @@ func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 		}
 	}
 	return best.ID
+}
+
+// RegisterManaged records an agent created by tsp before its process becomes
+// observable. A later UpsertObserved call reuses this identity and adds process
+// details without losing the task or workspace metadata.
+func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, paneIndex int, now time.Time) (AgentRun, error) {
+	if r == nil {
+		return AgentRun{}, fmt.Errorf("agent run registry is nil")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if provider == "" {
+		provider = AgentProviderFallback
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var id string
+	for candidateID, run := range r.runs {
+		if run.SessionName == result.Session && run.PaneIndex == paneIndex && run.Managed {
+			id = candidateID
+			break
+		}
+	}
+	if id == "" {
+		id = newAgentRunID()
+	}
+	run := r.runs[id]
+	if run.StartedAt.IsZero() {
+		run.StartedAt = now
+	}
+	run.ID = id
+	run.Provider = provider
+	run.Task = result.Task
+	run.SessionName = result.Session
+	run.PaneIndex = paneIndex
+	run.CWD = result.WorktreePath
+	run.Branch = result.Branch
+	run.WorktreePath = result.WorktreePath
+	run.GitPath = result.GitPath
+	run.Status = "starting"
+	run.LastSeenAt = now
+	run.Managed = true
+	r.runs[id] = run
+
+	return run, r.saveLocked()
+}
+
+// Delete forgets a managed agent after its session/worktree has been removed.
+func (r *AgentRunRegistry) Delete(id string) error {
+	if r == nil || id == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.runs[id]; !ok {
+		return nil
+	}
+	delete(r.runs, id)
+	return r.saveLocked()
 }
 
 func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time) error {
@@ -203,27 +245,6 @@ func (r *AgentRunRegistry) Find(id string) (AgentRun, bool) {
 	return run, ok
 }
 
-func (r *AgentRunRegistry) FindByPane(sessionName string, paneIndex int) (AgentRun, bool) {
-	if r == nil {
-		return AgentRun{}, false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var best AgentRun
-	for _, run := range r.runs {
-		if run.SessionName != sessionName || run.PaneIndex != paneIndex {
-			continue
-		}
-		if run.Status == "stopped" && best.ID != "" && best.Status != "stopped" {
-			continue
-		}
-		if best.ID == "" || run.LastSeenAt.After(best.LastSeenAt) {
-			best = run
-		}
-	}
-	return best, best.ID != ""
-}
-
 func (r *AgentRunRegistry) List() []AgentRun {
 	if r == nil {
 		return nil
@@ -233,22 +254,6 @@ func (r *AgentRunRegistry) List() []AgentRun {
 	runs := make([]AgentRun, 0, len(r.runs))
 	for _, run := range r.runs {
 		runs = append(runs, run)
-	}
-	sortRuns(runs)
-	return runs
-}
-
-func (r *AgentRunRegistry) ListBySession(sessionName string) []AgentRun {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var runs []AgentRun
-	for _, run := range r.runs {
-		if run.SessionName == sessionName {
-			runs = append(runs, run)
-		}
 	}
 	sortRuns(runs)
 	return runs
@@ -313,28 +318,4 @@ func DetectAgentProvider(process string) string {
 		return AgentProviderClaude
 	}
 	return AgentProviderFallback
-}
-
-// ResolveAgentLogPath maps an observed provider/cwd/session ID to the best
-// known log file. Empty path means pane capture should remain the fallback.
-func ResolveAgentLogPath(provider, cwd, agentSessionID string) (string, string) {
-	if cwd == "" {
-		return "", AgentConfidenceLow
-	}
-	switch provider {
-	case AgentProviderClaude:
-		if agentSessionID != "" {
-			if sess, ok := agentlog.FindJSONLByID(cwd, agentSessionID); ok {
-				return sess.Path, AgentConfidenceHigh
-			}
-		}
-		if path, err := agentlog.FindJSONL(cwd); err == nil {
-			return path, AgentConfidenceLow
-		}
-	case AgentProviderCodex:
-		if sess, ok := agentlog.FindCodexJSONL(cwd); ok {
-			return sess.Path, AgentConfidenceLow
-		}
-	}
-	return "", AgentConfidenceLow
 }

@@ -44,9 +44,7 @@ func TestAgentRunRegistryUpsertPersistsAndReusesRun(t *testing.T) {
 		PaneIndex:   1,
 		PID:         1234,
 		CWD:         "/repo",
-		LogPath:     "/repo/log.jsonl",
 		Status:      "active",
-		Confidence:  "high",
 	}, start)
 	if err != nil {
 		t.Fatalf("UpsertObserved first: %v", err)
@@ -65,9 +63,7 @@ func TestAgentRunRegistryUpsertPersistsAndReusesRun(t *testing.T) {
 		PaneIndex:   1,
 		PID:         1234,
 		CWD:         "/repo",
-		LogPath:     "/repo/new-log.jsonl",
 		Status:      "waiting",
-		Confidence:  "high",
 	}, later)
 	if err != nil {
 		t.Fatalf("UpsertObserved second: %v", err)
@@ -75,8 +71,8 @@ func TestAgentRunRegistryUpsertPersistsAndReusesRun(t *testing.T) {
 	if updated.ID != run.ID {
 		t.Fatalf("expected same run id, got %q want %q", updated.ID, run.ID)
 	}
-	if updated.LogPath != "/repo/new-log.jsonl" || updated.Status != "waiting" {
-		t.Fatalf("expected updated run fields, got log=%q status=%q", updated.LogPath, updated.Status)
+	if updated.Status != "waiting" {
+		t.Fatalf("expected updated run status, got %q", updated.Status)
 	}
 	if !updated.StartedAt.Equal(start) || !updated.LastSeenAt.Equal(later) {
 		t.Fatalf("unexpected updated timestamps: started=%s lastSeen=%s", updated.StartedAt, updated.LastSeenAt)
@@ -90,7 +86,7 @@ func TestAgentRunRegistryUpsertPersistsAndReusesRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected persisted run %q", run.ID)
 	}
-	if got.Status != "waiting" || got.LogPath != "/repo/new-log.jsonl" {
+	if got.Status != "waiting" {
 		t.Fatalf("persisted run not updated: %#v", got)
 	}
 }
@@ -108,7 +104,6 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 		PaneIndex:   1,
 		PID:         10,
 		Status:      "active",
-		Confidence:  "high",
 	}, now)
 	if err != nil {
 		t.Fatalf("UpsertObserved keep: %v", err)
@@ -119,7 +114,6 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 		PaneIndex:   1,
 		PID:         11,
 		Status:      "active",
-		Confidence:  "high",
 	}, now)
 	if err != nil {
 		t.Fatalf("UpsertObserved stop: %v", err)
@@ -146,5 +140,52 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("expected non-empty registry file")
+	}
+}
+
+func TestAgentRunRegistryRegistersManagedAgentAndReusesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	reg, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	managed, err := reg.RegisterManaged(SpawnResult{
+		Task:         "replace the dashboard",
+		Branch:       "spawn/replace-dashboard-bold-tide",
+		Session:      "tsp-replace-dashboard-bold-tide",
+		WorktreePath: "/work/tsp-replace-dashboard-bold-tide",
+		GitPath:      "/code/tsp",
+	}, AgentProviderCodex, 1, now)
+	if err != nil {
+		t.Fatalf("RegisterManaged: %v", err)
+	}
+	if !managed.Managed || managed.Task != "replace the dashboard" {
+		t.Fatalf("managed metadata not recorded: %#v", managed)
+	}
+
+	observed, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider:    AgentProviderCodex,
+		SessionName: managed.SessionName,
+		PaneIndex:   1,
+		PID:         987,
+		CWD:         managed.WorktreePath,
+		Status:      "running",
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("UpsertObserved: %v", err)
+	}
+	if observed.ID != managed.ID {
+		t.Fatalf("observation created a duplicate run: got %q want %q", observed.ID, managed.ID)
+	}
+	if observed.Task != managed.Task || !observed.Managed {
+		t.Fatalf("observation lost managed metadata: %#v", observed)
+	}
+
+	if err := reg.Delete(managed.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := reg.Find(managed.ID); ok {
+		t.Fatal("deleted managed run is still present")
 	}
 }

@@ -8,89 +8,101 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/matteo-hertel/tmux-super-powers/config"
+	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 )
 
-func TestDashViewKeepsSelectedSessionInsideTerminalHeight(t *testing.T) {
-	m := dashModel{
-		width:  90,
-		height: 14,
-		cursor: 24,
+func TestAgentDashboardDoesNotPoll(t *testing.T) {
+	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
+	if cmd := model.Init(); cmd != nil {
+		t.Fatal("dashboard Init returned a command; snapshots must refresh only on demand")
 	}
-	for i := 0; i < 30; i++ {
-		m.sessions = append(m.sessions, dashSession{
-			name:        fmt.Sprintf("session-%02d", i),
-			status:      "active",
-			lastChanged: time.Now(),
+}
+
+func TestAgentDashboardKeepsSelectionVisibleAndInsideTerminal(t *testing.T) {
+	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
+	model.width = 96
+	model.height = 18
+	model.cursor = 24
+	for index := 0; index < 30; index++ {
+		model.agents = append(model.agents, agentEntry{
+			run: service.AgentRun{
+				ID:          fmt.Sprintf("run-%02d", index),
+				SessionName: fmt.Sprintf("session-%02d", index),
+				Task:        fmt.Sprintf("agent task %02d", index),
+				PaneIndex:   1,
+				StartedAt:   time.Now(),
+			},
+			live:          true,
+			sessionExists: true,
 		})
 	}
 
-	view := m.View()
+	view := model.View()
+	if !strings.Contains(view, "agent task 24") {
+		t.Fatal("selected agent was not rendered")
+	}
 	lines := strings.Split(view, "\n")
-	selectedLine := -1
-	for i, line := range lines {
-		if strings.Contains(line, "session-24") {
-			selectedLine = i
-			break
-		}
+	if len(lines) > model.height {
+		t.Fatalf("view rendered %d lines for terminal height %d", len(lines), model.height)
 	}
-
-	if selectedLine == -1 {
-		t.Fatal("selected session was not rendered")
-	}
-	if selectedLine >= m.height {
-		t.Fatalf("selected session rendered below viewport at line %d for terminal height %d", selectedLine, m.height)
-	}
-	if len(lines) > m.height {
-		t.Fatalf("view rendered %d lines for terminal height %d", len(lines), m.height)
-	}
-}
-
-func TestDashViewBoundsWidePaneContentToTerminalWidth(t *testing.T) {
-	m := dashModel{
-		width:  80,
-		height: 18,
-		sessions: []dashSession{{
-			name:        "wide-session",
-			status:      "active",
-			lastChanged: time.Now(),
-			paneContent: strings.Repeat("x", 200),
-		}},
-	}
-
-	for i, line := range strings.Split(m.View(), "\n") {
-		if width := lipgloss.Width(line); width > m.width {
-			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d width = %d, want <= %d", index, width, model.width)
 		}
 	}
 }
 
-func TestDashConfirmDiscardStartsAsyncCleanup(t *testing.T) {
-	m := dashModel{
-		mode: dashConfirmDiscard,
-		sessions: []dashSession{{
-			name:         "repo-feature",
-			status:       "active",
-			lastChanged:  time.Now(),
-			isWorktree:   true,
-			worktreePath: t.TempDir(),
-			gitPath:      t.TempDir(),
-			branch:       "feature",
-		}},
-	}
+func TestAgentDashboardBoundsWideOutput(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{{
+		run: service.AgentRun{
+			ID:          "run-wide",
+			SessionName: "wide-session",
+			Task:        "wide output",
+			PaneIndex:   1,
+		},
+		output:        strings.Repeat("x", 300),
+		live:          true,
+		sessionExists: true,
+	}}, &config.Config{}, nil, "/repo")
+	model.width = 72
+	model.height = 18
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	got := next.(dashModel)
+	for index, line := range strings.Split(model.View(), "\n") {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d width = %d, want <= %d", index, width, model.width)
+		}
+	}
+}
 
-	if cmd == nil {
-		t.Fatal("confirming worktree discard returned nil command; cleanup should run asynchronously")
+func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
+	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Fatal("opening spawn form returned an unexpected command")
 	}
-	if len(got.sessions) != 1 {
-		t.Fatalf("session was removed before cleanup completed; got %d sessions", len(got.sessions))
+	got := next.(agentDashboardModel)
+	if got.mode != dashAgentsSpawn {
+		t.Fatalf("mode = %v, want dashAgentsSpawn", got.mode)
 	}
-	if got.mode != dashBrowse {
-		t.Fatalf("mode = %v, want dashBrowse while cleanup runs", got.mode)
+	if got.pathInput.Value() != "/repo" {
+		t.Fatalf("spawn path = %q, want /repo", got.pathInput.Value())
 	}
-	if !strings.Contains(got.statusMsg, "Cleaning up repo-feature") {
-		t.Fatalf("statusMsg = %q, want cleanup progress message", got.statusMsg)
+	if !got.taskInput.Focused() {
+		t.Fatal("task input should be focused")
+	}
+}
+
+func TestProviderFromCommand(t *testing.T) {
+	tests := map[string]string{
+		"claude --dangerously-skip-permissions": service.AgentProviderClaude,
+		"codex --full-auto":                     service.AgentProviderCodex,
+		"aider":                                 "aider",
+		"":                                      service.AgentProviderFallback,
+	}
+	for command, want := range tests {
+		if got := providerFromCommand(command); got != want {
+			t.Errorf("providerFromCommand(%q) = %q, want %q", command, got, want)
+		}
 	}
 }

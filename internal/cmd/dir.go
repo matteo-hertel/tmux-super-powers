@@ -51,12 +51,12 @@ var dirCmd = &cobra.Command{
 
 		delegate := list.NewDefaultDelegate()
 		delegate.ShowDescription = true
-		
+
 		textInput := textinput.New()
 		textInput.Placeholder = "Type to filter directories..."
 		textInput.Focus()
 		textInput.Width = 50
-		
+
 		m := dirModel{
 			list:          list.New(items, delegate, 0, 0),
 			textInput:     textInput,

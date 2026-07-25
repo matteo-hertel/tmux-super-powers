@@ -111,15 +111,8 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 }
 
 // SendKeys is tested via integration (requires tmux).
-// The implementation uses load-buffer/paste-buffer to reliably handle
-// arbitrary text including URLs and special characters.
-
-func TestBuildListSessionsArgs(t *testing.T) {
-	args := BuildListSessionsArgs()
-	if args[0] != "list-sessions" {
-		t.Errorf("expected list-sessions, got %s", args[0])
-	}
-}
+// The implementation sends literal chunks so URLs and special characters are
+// not interpreted as tmux key names.
 
 func TestBuildCapturePaneArgs(t *testing.T) {
 	args := BuildCapturePaneArgs("mysession:0.1")

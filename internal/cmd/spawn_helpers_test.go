@@ -2,27 +2,6 @@ package cmd
 
 import "testing"
 
-func TestTaskToBranch(t *testing.T) {
-	tests := []struct {
-		task string
-		want string
-	}{
-		{"fix the auth token expiry bug", "spawn/fix-the-auth-token-expiry-bug"},
-		{"Add Dark Mode Support!", "spawn/add-dark-mode-support"},
-		{"refactor: database connection pooling layer", "spawn/refactor-database-connection-pooling-layer"},
-		{"", "spawn/task"},
-		{"a very long task description that exceeds the fifty character limit for branch names which should be truncated", "spawn/a-very-long-task-description-that-exceeds-the"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.task, func(t *testing.T) {
-			got := taskToBranch(tt.task)
-			if got != tt.want {
-				t.Errorf("taskToBranch(%q) = %q, want %q", tt.task, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseTaskFile(t *testing.T) {
 	input := `# My tasks
 fix the authentication bug

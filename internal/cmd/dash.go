@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,1100 +13,865 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/matteo-hertel/tmux-super-powers/config"
+	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 var dashCmd = &cobra.Command{
 	Use:   "dash",
-	Short: "Mission control — monitor, review, and manage all sessions",
-	Long: `Unified dashboard for all your tmux sessions.
+	Short: "Open the agent manager",
+	Long: `Manage local Claude Code, Codex, and other terminal agents.
 
-Live preview with activity detection, diff viewer, PR/CI actions, and cleanup.
-Press ? inside the dashboard for the full key binding reference.`,
+The dashboard takes an on-demand snapshot instead of polling agent output or CI.
+Spawn agents, send follow-up prompts, attach to their tmux sessions, stop a
+process, or remove a managed worktree from one place.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !tmuxpkg.IsInsideTmux() {
-			fmt.Fprintf(os.Stderr, "Error: dash must be run inside a tmux session\n")
+			fmt.Fprintln(os.Stderr, "Error: dash must be run inside a tmux session")
 			os.Exit(1)
 		}
 
-		sessions, err := getTmuxSessions()
-		if err != nil || len(sessions) == 0 {
-			fmt.Println("No tmux sessions found")
-			return
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error determining current directory: %v\n", err)
+			os.Exit(1)
+		}
+		registry, err := service.NewAgentRunRegistry(filepath.Join(config.TspDir(), "agent-runs.json"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading agent registry: %v\n", err)
+			os.Exit(1)
+		}
+		agents, err := discoverAgents(registry)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error discovering agents: %v\n", err)
+			os.Exit(1)
 		}
 
-		cfg, _ := config.Load()
-
-		// Build worktree lookup
-		var wtMap map[string]Worktree
-		if isGitRepo() {
-			worktrees, _ := getWorktrees()
-			wtMap = make(map[string]Worktree)
-			repoName := getRepoName()
-			for _, wt := range worktrees {
-				sessName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, wt.Branch))
-				wtMap[sessName] = wt
-			}
-		}
-
-		m := dashModel{
-			sessions:      make([]dashSession, len(sessions)),
-			cfg:           cfg,
-			lastRefreshed: time.Now(),
-		}
-		for i, s := range sessions {
-			content := capturePaneContent(s, 0)
-			ds := dashSession{
-				name:        s,
-				status:      "active",
-				lastChanged: time.Now(),
-				prevContent: "",
-				paneContent: content,
-			}
-			// Check worktree first
-			if wt, ok := wtMap[s]; ok {
-				ds.isWorktree = true
-				ds.branch = wt.Branch
-				ds.worktreePath = wt.Path
-				ds.isGitRepo = true
-				ds.gitPath = wt.Path
-			} else {
-				// For non-worktree sessions, detect git info from pane cwd
-				gitPath, branch := detectSessionGitInfo(s)
-				if gitPath != "" {
-					ds.isGitRepo = true
-					ds.gitPath = gitPath
-					ds.branch = branch
-					// Check if this session is actually inside a git worktree
-					cwd := tmuxpkg.GetPaneCwd(s)
-					if cwd != "" {
-						gitDirOut, err1 := exec.Command("git", "-C", cwd, "rev-parse", "--git-dir").Output()
-						commonDirOut, err2 := exec.Command("git", "-C", cwd, "rev-parse", "--git-common-dir").Output()
-						if err1 == nil && err2 == nil {
-							gd := strings.TrimSpace(string(gitDirOut))
-							cd := strings.TrimSpace(string(commonDirOut))
-							if !filepath.IsAbs(gd) {
-								gd = filepath.Join(cwd, gd)
-							}
-							if !filepath.IsAbs(cd) {
-								cd = filepath.Join(cwd, cd)
-							}
-							if filepath.Clean(gd) != filepath.Clean(cd) {
-								ds.isWorktree = true
-								ds.worktreePath = gitPath
-								ds.gitPath = filepath.Dir(filepath.Clean(cd))
-							}
-						}
-					}
-				}
-			}
-			m.sessions[i] = ds
-		}
-
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		finalModel, err := p.Run()
+		model := newAgentDashboardModel(agents, cfg, registry, cwd)
+		program := tea.NewProgram(model, tea.WithAltScreen())
+		finalModel, err := program.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-
-		if fm, ok := finalModel.(dashModel); ok && fm.jumpTo != "" {
-			tmuxpkg.AttachOrSwitch(fm.jumpTo)
+		if final, ok := finalModel.(agentDashboardModel); ok && final.attachSession != "" {
+			tmuxpkg.AttachOrSwitch(final.attachSession)
 		}
 	},
 }
 
-// dashSession merges live monitoring data with worktree/diff/PR data.
-type dashSession struct {
-	// Identity
-	name         string
-	isWorktree   bool
-	branch       string
-	worktreePath string
-	isGitRepo    bool   // true if session cwd is in any git repo
-	gitPath      string // git repo root path (works for worktrees AND regular repos)
-
-	// Live monitoring
-	status      string // active, idle, done, error
-	lastChanged time.Time
-	prevContent string
-	paneContent string
-
-	// Diff data (loaded lazily on first 'd' press)
-	filesChanged int
-	insertions   int
-	deletions    int
-	diffOutput   string
-	diffLoaded   bool
-
-	// PR data (loaded lazily on first p/f/r press)
-	prNumber    int
-	prURL       string
-	ciStatus    string
-	reviewCount int
+type agentEntry struct {
+	run           service.AgentRun
+	branch        string
+	worktreePath  string
+	gitPath       string
+	output        string
+	live          bool
+	sessionExists bool
 }
 
-type dashView int
+func (a agentEntry) title() string {
+	if strings.TrimSpace(a.run.Task) != "" {
+		return strings.TrimSpace(a.run.Task)
+	}
+	return a.run.SessionName
+}
+
+func (a agentEntry) status() string {
+	switch {
+	case a.live:
+		return "running"
+	case a.sessionExists:
+		return "exited"
+	default:
+		return "missing"
+	}
+}
+
+func (a agentEntry) provider() string {
+	if a.run.Provider == "" || a.run.Provider == service.AgentProviderFallback {
+		return "agent"
+	}
+	return a.run.Provider
+}
+
+func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
+	sessionNames, err := service.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	sessionSet := make(map[string]bool, len(sessionNames))
+	seenRuns := make(map[string]bool)
+	var entries []agentEntry
+
+	for _, sessionName := range sessionNames {
+		sessionSet[sessionName] = true
+		gitInfo := service.DetectSessionGitInfoFull(sessionName)
+		for pane := 0; pane < service.GetPaneCount(sessionName); pane++ {
+			process := service.GetPaneProcess(sessionName, pane)
+			processInfo := service.DetectPaneAgentProcess(sessionName, pane, process)
+			isAgent := service.PaneTypeFromProcess(process) == "agent" ||
+				(processInfo.Provider != "" && processInfo.Provider != service.AgentProviderFallback) ||
+				processInfo.Command == "aider"
+			if !isAgent {
+				continue
+			}
+
+			provider := processInfo.Provider
+			if provider == "" || (provider == service.AgentProviderFallback && processInfo.Command == "aider") {
+				provider = processInfo.Command
+			}
+			if provider == "" {
+				provider = service.DetectAgentProvider(process)
+			}
+			cwd := service.GetAgentPaneCwd(sessionName, pane)
+			run, upsertErr := registry.UpsertObserved(service.ObservedAgentRun{
+				Provider:    provider,
+				SessionName: sessionName,
+				PaneIndex:   pane,
+				PID:         processInfo.PID,
+				CWD:         cwd,
+				Status:      "running",
+			}, now)
+			if upsertErr != nil {
+				return nil, upsertErr
+			}
+			seenRuns[run.ID] = true
+			entries = append(entries, agentEntry{
+				run:           run,
+				branch:        firstNonEmpty(run.Branch, gitInfo.Branch),
+				worktreePath:  firstNonEmpty(run.WorktreePath, gitInfo.WorktreePath),
+				gitPath:       firstNonEmpty(run.GitPath, gitInfo.GitPath),
+				output:        service.CapturePaneContent(sessionName, pane),
+				live:          true,
+				sessionExists: true,
+			})
+		}
+	}
+
+	if err := registry.MarkUnseenStopped(seenRuns, now); err != nil {
+		return nil, err
+	}
+
+	// Keep tsp-managed agents visible after their process or session exits so
+	// the operator can inspect and clean the workspace deliberately.
+	for _, run := range registry.List() {
+		if seenRuns[run.ID] || !run.Managed {
+			continue
+		}
+		entry := agentEntry{
+			run:           run,
+			branch:        run.Branch,
+			worktreePath:  run.WorktreePath,
+			gitPath:       run.GitPath,
+			sessionExists: sessionSet[run.SessionName],
+		}
+		if entry.sessionExists {
+			entry.output = service.CapturePaneContent(run.SessionName, run.PaneIndex)
+		}
+		entries = append(entries, entry)
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].live != entries[j].live {
+			return entries[i].live
+		}
+		if entries[i].run.Managed != entries[j].run.Managed {
+			return entries[i].run.Managed
+		}
+		return entries[i].run.StartedAt.After(entries[j].run.StartedAt)
+	})
+	return entries, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+type agentDashboardMode int
 
 const (
-	dashViewLive dashView = iota // live pane preview
-	dashViewDiff                 // git diff
-	dashViewHelp                 // ? help overlay
+	dashAgentsBrowse agentDashboardMode = iota
+	dashAgentsSpawn
+	dashAgentsMessage
+	dashAgentsConfirmStop
+	dashAgentsConfirmCleanup
+	dashAgentsHelp
 )
 
-type dashMode int
-
-const (
-	dashBrowse dashMode = iota
-	dashConfirmKill
-	dashConfirmDiscard
-	dashContinuePrompt
-	dashStatusMessage
-)
-
-type dashModel struct {
-	sessions      []dashSession
+type agentDashboardModel struct {
+	agents        []agentEntry
 	cursor        int
-	jumpTo        string
-	previewPane   int
 	width         int
 	height        int
 	cfg           *config.Config
-	lastRefreshed time.Time
-	view          dashView
-	mode          dashMode
-	statusMsg     string
-	textInput     textinput.Model
+	registry      *service.AgentRunRegistry
+	cwd           string
+	mode          agentDashboardMode
+	taskInput     textinput.Model
+	pathInput     textinput.Model
+	focusedInput  int
+	busy          bool
+	statusMessage string
+	attachSession string
 }
 
-type dashTickMsg time.Time
-
-type dashWorktreeCleanupDoneMsg struct {
-	sessionName   string
-	removeSession bool
-	status        string
+type agentsRefreshedMsg struct {
+	agents []agentEntry
+	err    error
 }
 
-func dashTickCmd(refreshMs int) tea.Cmd {
-	d := time.Duration(refreshMs) * time.Millisecond
-	return tea.Tick(d, func(t time.Time) tea.Msg {
-		return dashTickMsg(t)
-	})
+type agentActionDoneMsg struct {
+	agents  []agentEntry
+	message string
+	err     error
 }
 
-func (m dashModel) Init() tea.Cmd {
-	return dashTickCmd(m.cfg.Dash.RefreshMs)
+func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *service.AgentRunRegistry, cwd string) agentDashboardModel {
+	taskInput := textinput.New()
+	taskInput.Placeholder = "What should the agent do?"
+	taskInput.CharLimit = 1000
+	taskInput.Width = 72
+
+	pathInput := textinput.New()
+	pathInput.Placeholder = "/path/to/project"
+	pathInput.CharLimit = 1000
+	pathInput.Width = 72
+
+	return agentDashboardModel{
+		agents:    agents,
+		cfg:       cfg,
+		registry:  registry,
+		cwd:       cwd,
+		taskInput: taskInput,
+		pathInput: pathInput,
+	}
 }
 
-func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+func (m agentDashboardModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m agentDashboardModel) selected() (agentEntry, bool) {
+	if len(m.agents) == 0 || m.cursor < 0 || m.cursor >= len(m.agents) {
+		return agentEntry{}, false
+	}
+	return m.agents[m.cursor], true
+}
+
+func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 
-	case dashWorktreeCleanupDoneMsg:
-		if msg.removeSession {
-			m.removeSessionByName(msg.sessionName)
+	case agentsRefreshedMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.statusMessage = "Refresh failed: " + msg.err.Error()
+			return m, nil
 		}
-		m.statusMsg = msg.status
-		m.mode = dashStatusMessage
+		selectedID := ""
+		if selected, ok := m.selected(); ok {
+			selectedID = selected.run.ID
+		}
+		m.agents = msg.agents
+		m.restoreSelection(selectedID)
+		m.statusMessage = fmt.Sprintf("Snapshot refreshed · %d agents", len(m.agents))
 		return m, nil
 
-	case dashTickMsg:
-		// Only refresh pane content in live view
-		if m.view == dashViewLive {
-			now := time.Now()
-			for i := range m.sessions {
-				s := &m.sessions[i]
-				pane := 0
-				if i == m.cursor {
-					pane = m.previewPane
-				}
-				newContent := capturePaneContent(s.name, pane)
-				s.prevContent = s.paneContent
-				if newContent != s.paneContent {
-					s.lastChanged = now
-				}
-				s.paneContent = newContent
-				s.status = inferStatus(
-					s.prevContent, s.paneContent, s.lastChanged, now,
-					m.cfg.Dash.ErrorPatterns, m.cfg.Dash.PromptPattern,
-				)
-			}
-			m.lastRefreshed = now
+	case agentActionDoneMsg:
+		m.busy = false
+		m.mode = dashAgentsBrowse
+		if msg.err != nil {
+			m.statusMessage = msg.message + ": " + msg.err.Error()
+			return m, nil
 		}
-		return m, dashTickCmd(m.cfg.Dash.RefreshMs)
+		m.agents = msg.agents
+		if m.cursor >= len(m.agents) && m.cursor > 0 {
+			m.cursor--
+		}
+		m.statusMessage = msg.message
+		return m, nil
 
 	case tea.KeyMsg:
-		// Help overlay dismisses on any key
-		if m.view == dashViewHelp {
-			m.view = dashViewLive
-			return m, nil
-		}
-
-		// Handle modal states
-		switch m.mode {
-		case dashConfirmKill:
-			if msg.String() == "y" {
-				if m.cursor < len(m.sessions) {
-					name := m.sessions[m.cursor].name
-					tmuxpkg.KillSession(name)
-					m.sessions = append(m.sessions[:m.cursor], m.sessions[m.cursor+1:]...)
-					if m.cursor >= len(m.sessions) && m.cursor > 0 {
-						m.cursor--
-					}
-				}
-			}
-			m.mode = dashBrowse
-			return m, nil
-
-		case dashConfirmDiscard:
-			if msg.String() == "y" {
-				cmd := m.discardWorktree()
-				m.mode = dashBrowse
-				return m, cmd
-			}
-			m.mode = dashBrowse
-			return m, nil
-
-		case dashContinuePrompt:
-			switch msg.Type {
-			case tea.KeyEnter:
-				prompt := strings.TrimSpace(m.textInput.Value())
-				if prompt != "" && m.cursor < len(m.sessions) {
-					target := fmt.Sprintf("%s:0.1", m.sessions[m.cursor].name)
-					tmuxpkg.SendKeys(target, prompt)
-					m.statusMsg = "Prompt sent to agent"
-					m.mode = dashStatusMessage
-				} else {
-					m.mode = dashBrowse
-				}
-				return m, nil
-			case tea.KeyEsc:
-				m.mode = dashBrowse
-				return m, nil
-			}
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
-
-		case dashStatusMessage:
-			m.mode = dashBrowse
-			m.statusMsg = ""
-			return m, nil
-		}
-
-		// Browse mode
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
-			return m, tea.Quit
-		case tea.KeyUp:
-			m.moveCursor(-1)
-			return m, nil
-		case tea.KeyDown:
-			m.moveCursor(1)
-			return m, nil
-		case tea.KeyEnter:
-			if len(m.sessions) > 0 {
-				m.jumpTo = m.sessions[m.cursor].name
-			}
-			return m, tea.Quit
-		case tea.KeyTab:
-			if m.view == dashViewLive {
-				m.previewPane++
-			}
-			return m, nil
-		default:
-			switch msg.String() {
-			case "q":
+		if m.busy {
+			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
-			case "j":
-				m.moveCursor(1)
-				return m, nil
-			case "k":
-				m.moveCursor(-1)
-				return m, nil
-			case "?":
-				m.view = dashViewHelp
-				return m, nil
-			case "d":
-				// Toggle between live and diff view
-				if m.view == dashViewLive {
-					m.loadDiffIfNeeded()
-					m.view = dashViewDiff
-				} else {
-					m.view = dashViewLive
-				}
-				return m, nil
-			case "x":
-				if m.cursor < len(m.sessions) {
-					if m.sessions[m.cursor].isWorktree {
-						m.mode = dashConfirmDiscard
-					} else {
-						m.mode = dashConfirmKill
-					}
-				}
-				return m, nil
-			case "c":
-				ti := textinput.New()
-				ti.Placeholder = "Type follow-up prompt for the agent..."
-				ti.Focus()
-				ti.Width = m.width - 10
-				m.textInput = ti
-				m.mode = dashContinuePrompt
-				return m, nil
-			case "p":
-				m.createPR()
-				return m, nil
-			case "f":
-				m.fixCI()
-				return m, nil
-			case "r":
-				m.addressReviewComments()
-				return m, nil
-			case "m":
-				return m, m.mergeBranch()
-			case "W":
-				return m, m.cleanupMerged()
 			}
+			return m, nil
 		}
+		if m.mode != dashAgentsBrowse {
+			return m.updateModal(msg)
+		}
+		return m.updateBrowse(msg)
 	}
-
 	return m, nil
 }
 
-func (m *dashModel) moveCursor(delta int) {
-	if len(m.sessions) == 0 {
-		return
+func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q", "esc":
+		return m, tea.Quit
+	case "up", "k":
+		m.moveCursor(-1)
+	case "down", "j":
+		m.moveCursor(1)
+	case "enter":
+		if selected, ok := m.selected(); ok && selected.sessionExists {
+			m.attachSession = selected.run.SessionName
+			return m, tea.Quit
+		}
+	case "n":
+		m.openSpawn()
+	case "m":
+		if selected, ok := m.selected(); ok && selected.live {
+			m.mode = dashAgentsMessage
+			m.taskInput.SetValue("")
+			m.taskInput.Placeholder = "Send a follow-up prompt…"
+			m.taskInput.Focus()
+		} else {
+			m.statusMessage = "Select a running agent to send a message"
+		}
+	case "s":
+		if selected, ok := m.selected(); ok && selected.live {
+			m.mode = dashAgentsConfirmStop
+		} else {
+			m.statusMessage = "Select a running agent to stop"
+		}
+	case "x":
+		if _, ok := m.selected(); ok {
+			m.mode = dashAgentsConfirmCleanup
+		}
+	case "r":
+		m.busy = true
+		m.statusMessage = "Refreshing agent snapshot…"
+		return m, refreshAgentsCmd(m.registry)
+	case "?":
+		m.mode = dashAgentsHelp
 	}
-	m.cursor += delta
-	if m.cursor < 0 {
-		m.cursor = len(m.sessions) - 1
-	} else if m.cursor >= len(m.sessions) {
-		m.cursor = 0
-	}
-	m.previewPane = 0
+	return m, nil
 }
 
-func (m *dashModel) loadDiffIfNeeded() {
-	if m.cursor >= len(m.sessions) {
-		return
+func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case dashAgentsSpawn:
+		switch msg.String() {
+		case "esc":
+			m.closeModal()
+			return m, nil
+		case "tab", "shift+tab":
+			m.focusedInput = 1 - m.focusedInput
+			m.syncInputFocus()
+			return m, nil
+		case "enter":
+			task := strings.TrimSpace(m.taskInput.Value())
+			path := strings.TrimSpace(m.pathInput.Value())
+			if task == "" || path == "" {
+				m.statusMessage = "Project path and task are required"
+				return m, nil
+			}
+			m.busy = true
+			m.statusMessage = "Creating worktree and starting agent…"
+			return m, spawnManagedAgentCmd(m.cfg, m.registry, path, task)
+		}
+		return m.updateFocusedInput(msg)
+
+	case dashAgentsMessage:
+		switch msg.String() {
+		case "esc":
+			m.closeModal()
+			return m, nil
+		case "enter":
+			prompt := strings.TrimSpace(m.taskInput.Value())
+			selected, ok := m.selected()
+			if prompt == "" || !ok {
+				return m, nil
+			}
+			m.busy = true
+			m.statusMessage = "Sending prompt…"
+			return m, messageAgentCmd(m.registry, selected, prompt)
+		}
+		var cmd tea.Cmd
+		m.taskInput, cmd = m.taskInput.Update(msg)
+		return m, cmd
+
+	case dashAgentsConfirmStop:
+		switch msg.String() {
+		case "y", "enter":
+			selected, ok := m.selected()
+			if !ok {
+				m.closeModal()
+				return m, nil
+			}
+			m.busy = true
+			m.statusMessage = "Stopping agent process…"
+			return m, stopAgentCmd(m.registry, selected)
+		case "n", "esc":
+			m.closeModal()
+		}
+
+	case dashAgentsConfirmCleanup:
+		switch msg.String() {
+		case "y", "enter":
+			selected, ok := m.selected()
+			if !ok {
+				m.closeModal()
+				return m, nil
+			}
+			m.busy = true
+			m.statusMessage = "Removing agent session and workspace…"
+			return m, cleanupAgentCmd(m.registry, selected)
+		case "n", "esc":
+			m.closeModal()
+		}
+
+	case dashAgentsHelp:
+		m.closeModal()
 	}
-	s := &m.sessions[m.cursor]
-	if s.diffLoaded || !s.isGitRepo {
-		return
-	}
-	statCmd := exec.Command("git", "-C", s.gitPath, "diff", "--stat")
-	if out, err := statCmd.Output(); err == nil {
-		s.filesChanged, s.insertions, s.deletions = parseDiffStat(string(out))
-	}
-	diffCmd := exec.Command("git", "-C", s.gitPath, "diff")
-	if out, err := diffCmd.Output(); err == nil {
-		s.diffOutput = string(out)
-	}
-	s.diffLoaded = true
+	return m, nil
 }
 
-func (m *dashModel) createPR() {
-	if m.cursor >= len(m.sessions) {
-		return
-	}
-	s := &m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return
-	}
-	pushCmd := exec.Command("git", "-C", s.gitPath, "push", "-u", "origin", s.branch)
-	if err := pushCmd.Run(); err != nil {
-		m.statusMsg = fmt.Sprintf("Push failed: %v", err)
-		m.mode = dashStatusMessage
-		return
-	}
-	prCmd := exec.Command("gh", "pr", "create",
-		"--head", s.branch,
-		"--title", s.branch,
-		"--body", fmt.Sprintf("Auto-created from `tsp dash`\n\nBranch: %s", s.branch),
-	)
-	prCmd.Dir = s.gitPath
-	out, err := prCmd.Output()
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("PR creation failed: %v", err)
+func (m agentDashboardModel) updateFocusedInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	if m.focusedInput == 0 {
+		m.taskInput, cmd = m.taskInput.Update(msg)
 	} else {
-		url := strings.TrimSpace(string(out))
-		s.prURL = url
-		m.statusMsg = fmt.Sprintf("PR created: %s", url)
+		m.pathInput, cmd = m.pathInput.Update(msg)
 	}
-	m.mode = dashStatusMessage
+	return m, cmd
 }
 
-func (m *dashModel) mergeBranch() tea.Cmd {
-	if m.cursor >= len(m.sessions) {
-		return nil
+func (m *agentDashboardModel) openSpawn() {
+	m.mode = dashAgentsSpawn
+	m.focusedInput = 0
+	m.taskInput.SetValue("")
+	m.taskInput.Placeholder = "What should the agent do?"
+	path := m.cwd
+	if selected, ok := m.selected(); ok {
+		path = firstNonEmpty(selected.gitPath, selected.run.CWD, path)
 	}
-	s := m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return nil
+	m.pathInput.SetValue(path)
+	m.syncInputFocus()
+}
+
+func (m *agentDashboardModel) syncInputFocus() {
+	if m.focusedInput == 0 {
+		m.taskInput.Focus()
+		m.pathInput.Blur()
+		return
 	}
-	if s.isWorktree {
-		m.statusMsg = fmt.Sprintf("Merging and cleaning up %s...", s.branch)
-		m.mode = dashBrowse
-		return func() tea.Msg {
-			repoRoot, err := getRepoRoot()
-			if err != nil {
-				return dashWorktreeCleanupDoneMsg{
-					sessionName: s.name,
-					status:      fmt.Sprintf("Cannot find repo root: %v", err),
-				}
-			}
-			mergeCmd := exec.Command("git", "-C", repoRoot, "merge", s.branch)
-			if err := mergeCmd.Run(); err != nil {
-				return dashWorktreeCleanupDoneMsg{
-					sessionName: s.name,
-					status:      fmt.Sprintf("Merge failed: %v", err),
-				}
-			}
-			status := cleanupWorktreeSession(s, fmt.Sprintf("Merged and cleaned up %s", s.branch))
-			return dashWorktreeCleanupDoneMsg{
-				sessionName:   s.name,
-				removeSession: true,
-				status:        status,
+	m.taskInput.Blur()
+	m.pathInput.Focus()
+}
+
+func (m *agentDashboardModel) closeModal() {
+	m.mode = dashAgentsBrowse
+	m.taskInput.Blur()
+	m.pathInput.Blur()
+	m.statusMessage = ""
+}
+
+func (m *agentDashboardModel) moveCursor(delta int) {
+	if len(m.agents) == 0 {
+		return
+	}
+	m.cursor = (m.cursor + delta + len(m.agents)) % len(m.agents)
+}
+
+func (m *agentDashboardModel) restoreSelection(id string) {
+	if id != "" {
+		for index := range m.agents {
+			if m.agents[index].run.ID == id {
+				m.cursor = index
+				return
 			}
 		}
 	}
-
-	// Regular git repo — merge current branch into main/master
-	base := "main"
-	checkCmd := exec.Command("git", "-C", s.gitPath, "rev-parse", "--verify", "main")
-	if checkCmd.Run() != nil {
-		base = "master"
+	if m.cursor >= len(m.agents) {
+		m.cursor = max(0, len(m.agents)-1)
 	}
-	checkoutCmd := exec.Command("git", "-C", s.gitPath, "checkout", base)
-	if err := checkoutCmd.Run(); err != nil {
-		m.statusMsg = fmt.Sprintf("Checkout %s failed: %v", base, err)
-		m.mode = dashStatusMessage
-		return nil
-	}
-	mergeCmd := exec.Command("git", "-C", s.gitPath, "merge", s.branch)
-	if err := mergeCmd.Run(); err != nil {
-		m.statusMsg = fmt.Sprintf("Merge failed: %v", err)
-		m.mode = dashStatusMessage
-		return nil
-	}
-	exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
-	m.statusMsg = fmt.Sprintf("Merged %s into %s", s.branch, base)
-	m.mode = dashStatusMessage
-	return nil
 }
 
-func (m *dashModel) discardWorktree() tea.Cmd {
-	if m.cursor >= len(m.sessions) {
-		return nil
-	}
-	s := m.sessions[m.cursor]
-	m.statusMsg = fmt.Sprintf("Cleaning up %s...", s.name)
+func refreshAgentsCmd(registry *service.AgentRunRegistry) tea.Cmd {
 	return func() tea.Msg {
-		return dashWorktreeCleanupDoneMsg{
-			sessionName:   s.name,
-			removeSession: true,
-			status:        cleanupWorktreeSession(s, fmt.Sprintf("Removed %s", s.name)),
-		}
+		agents, err := discoverAgents(registry)
+		return agentsRefreshedMsg{agents: agents, err: err}
 	}
 }
 
-func (m *dashModel) cleanupMerged() tea.Cmd {
-	if m.cursor >= len(m.sessions) {
-		return nil
-	}
-	s := m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return nil
-	}
-	if s.isWorktree {
-		m.statusMsg = fmt.Sprintf("Checking merged branch %s...", s.branch)
-		m.mode = dashBrowse
-		return func() tea.Msg {
-			repoFlag := worktreeRepoFlag(s)
-			if !branchMergedIntoBase(repoFlag, s.branch) {
-				return dashWorktreeCleanupDoneMsg{
-					sessionName: s.name,
-					status:      fmt.Sprintf("Branch '%s' is not merged yet", s.branch),
+func spawnManagedAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, path, task string) tea.Cmd {
+	return func() tea.Msg {
+		results, err := service.SpawnAgents([]string{task}, "", false, cfg, path)
+		if err == nil {
+			provider := providerFromCommand(cfg.Spawn.AgentCommand)
+			for _, result := range results {
+				if result.Status != "ok" {
+					err = fmt.Errorf("%s", result.Error)
+					break
 				}
-			}
-			status := cleanupWorktreeSession(s, fmt.Sprintf("Cleaned up merged worktree %s", s.branch))
-			return dashWorktreeCleanupDoneMsg{
-				sessionName:   s.name,
-				removeSession: true,
-				status:        status,
-			}
-		}
-	}
-
-	// Check if branch is merged into main/master
-	if !branchMergedIntoBase(s.gitPath, s.branch) {
-		m.statusMsg = fmt.Sprintf("Branch '%s' is not merged yet", s.branch)
-		m.mode = dashStatusMessage
-		return nil
-	}
-	exec.Command("git", "-C", s.gitPath, "branch", "-D", s.branch).Run()
-	m.statusMsg = fmt.Sprintf("Deleted merged branch %s", s.branch)
-	m.mode = dashStatusMessage
-	return nil
-}
-
-func (m *dashModel) fixCI() {
-	if m.cursor >= len(m.sessions) {
-		return
-	}
-	s := &m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return
-	}
-	enrichWithPRData2(s)
-	if s.prNumber == 0 {
-		m.statusMsg = "No PR found — create one first with [p]"
-		m.mode = dashStatusMessage
-		return
-	}
-	logs, err := fetchFailingCILogs(s.prNumber)
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("No failing CI: %v", err)
-		m.mode = dashStatusMessage
-		return
-	}
-	prompt := fmt.Sprintf("The CI pipeline failed. Here are the failing logs:\n\n%s\n\nPlease fix the issues and push.", logs)
-	if len(prompt) > 4000 {
-		prompt = prompt[:4000] + "\n\n[truncated]"
-	}
-	target := fmt.Sprintf("%s:0.1", s.name)
-	tmuxpkg.SendKeys(target, prompt)
-	m.statusMsg = "CI failure logs sent to agent"
-	m.mode = dashStatusMessage
-}
-
-func (m *dashModel) addressReviewComments() {
-	if m.cursor >= len(m.sessions) {
-		return
-	}
-	s := &m.sessions[m.cursor]
-	if !s.isGitRepo {
-		m.statusMsg = "Not a git repo"
-		m.mode = dashStatusMessage
-		return
-	}
-	enrichWithPRData2(s)
-	if s.prNumber == 0 {
-		m.statusMsg = "No PR found — create one first with [p]"
-		m.mode = dashStatusMessage
-		return
-	}
-	comments, err := fetchPRComments(s.prNumber)
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("Failed to fetch comments: %v", err)
-		m.mode = dashStatusMessage
-		return
-	}
-	if len(comments) == 0 {
-		m.statusMsg = "No review comments found"
-		m.mode = dashStatusMessage
-		return
-	}
-	formatted := formatPRComments(comments)
-	prompt := fmt.Sprintf("Please address these PR review comments:\n\n%s", formatted)
-	target := fmt.Sprintf("%s:0.1", s.name)
-	tmuxpkg.SendKeys(target, prompt)
-	m.statusMsg = fmt.Sprintf("Review comments sent to agent (%d comments)", len(comments))
-	m.mode = dashStatusMessage
-}
-
-func (m *dashModel) removeSession(idx int) {
-	m.sessions = append(m.sessions[:idx], m.sessions[idx+1:]...)
-	if m.cursor >= len(m.sessions) && m.cursor > 0 {
-		m.cursor--
-	}
-}
-
-func (m *dashModel) removeSessionByName(name string) {
-	for i, s := range m.sessions {
-		if s.name == name {
-			m.removeSession(i)
-			return
-		}
-	}
-}
-
-func cleanupWorktreeSession(s dashSession, successStatus string) string {
-	_ = tmuxpkg.KillSession(s.name)
-	if !s.isWorktree || s.worktreePath == "" {
-		return successStatus
-	}
-
-	repoFlag := worktreeRepoFlag(s)
-	if err := exec.Command("git", "-C", repoFlag, "worktree", "remove", s.worktreePath, "--force").Run(); err != nil {
-		_ = exec.Command("git", "-C", repoFlag, "worktree", "prune").Run()
-	}
-	if s.branch != "" {
-		if err := exec.Command("git", "-C", repoFlag, "branch", "-D", s.branch).Run(); err != nil {
-			return fmt.Sprintf("%s (branch delete failed: %v)", successStatus, err)
-		}
-	}
-	return successStatus
-}
-
-func worktreeRepoFlag(s dashSession) string {
-	if s.worktreePath != "" {
-		if commonDirOut, err := exec.Command("git", "-C", s.worktreePath, "rev-parse", "--git-common-dir").Output(); err == nil {
-			commonDir := strings.TrimSpace(string(commonDirOut))
-			if commonDir != "" {
-				if !filepath.IsAbs(commonDir) {
-					commonDir = filepath.Join(s.worktreePath, commonDir)
-				}
-				return filepath.Dir(filepath.Clean(commonDir))
-			}
-		}
-	}
-	if s.gitPath != "" {
-		return s.gitPath
-	}
-	return s.worktreePath
-}
-
-func branchMergedIntoBase(repoPath, branch string) bool {
-	for _, base := range []string{"main", "master"} {
-		cmd := exec.Command("git", "-C", repoPath, "branch", "--merged", base)
-		if out, err := cmd.Output(); err == nil {
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.TrimSpace(line) == branch {
-					return true
+				if _, registerErr := registry.RegisterManaged(result, provider, 1, time.Now().UTC()); registerErr != nil {
+					err = registerErr
+					break
 				}
 			}
 		}
-	}
-	return false
-}
-
-// enrichWithPRData2 fetches PR/CI info for a dashSession lazily.
-func enrichWithPRData2(s *dashSession) {
-	if s.prNumber > 0 {
-		return
-	}
-	s.prNumber, s.prURL = findPRForBranch(s.branch)
-	if s.prNumber > 0 {
-		s.ciStatus = getCIStatus(s.prNumber)
-		s.reviewCount = getReviewCommentCount(s.prNumber)
+		agents, refreshErr := discoverAgents(registry)
+		if err == nil {
+			err = refreshErr
+		}
+		return agentActionDoneMsg{agents: agents, message: "Agent spawned", err: err}
 	}
 }
 
-// ── View ────────────────────────────────────────────────────────
+func providerFromCommand(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return service.AgentProviderFallback
+	}
+	provider := service.DetectAgentProvider(filepath.Base(fields[0]))
+	if provider == service.AgentProviderFallback && filepath.Base(fields[0]) == "aider" {
+		return "aider"
+	}
+	return provider
+}
 
-func (m dashModel) View() string {
+func messageAgentCmd(registry *service.AgentRunRegistry, agent agentEntry, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		err := service.SendToPane(agent.run.SessionName, agent.run.PaneIndex, prompt)
+		agents, refreshErr := discoverAgents(registry)
+		if err == nil {
+			err = refreshErr
+		}
+		return agentActionDoneMsg{agents: agents, message: "Prompt sent", err: err}
+	}
+}
+
+func stopAgentCmd(registry *service.AgentRunRegistry, agent agentEntry) tea.Cmd {
+	return func() tea.Msg {
+		err := service.InterruptPane(agent.run.SessionName, agent.run.PaneIndex)
+		agents, refreshErr := discoverAgents(registry)
+		if err == nil {
+			err = refreshErr
+		}
+		return agentActionDoneMsg{agents: agents, message: "Agent interrupted", err: err}
+	}
+}
+
+func cleanupAgentCmd(registry *service.AgentRunRegistry, agent agentEntry) tea.Cmd {
+	return func() tea.Msg {
+		cleanupWorktree := agent.worktreePath != ""
+		err := service.KillSession(
+			agent.run.SessionName,
+			cleanupWorktree,
+			agent.worktreePath,
+			agent.branch,
+			agent.gitPath,
+		)
+		if err == nil {
+			err = registry.Delete(agent.run.ID)
+		}
+		agents, refreshErr := discoverAgents(registry)
+		if err == nil {
+			err = refreshErr
+		}
+		return agentActionDoneMsg{agents: agents, message: "Agent workspace removed", err: err}
+	}
+}
+
+var (
+	dashMint       = lipgloss.Color("#9FE8C3")
+	dashAmber      = lipgloss.Color("#E5B566")
+	dashInk        = lipgloss.Color("#E7EBE8")
+	dashMuted      = lipgloss.Color("#8A948F")
+	dashFaint      = lipgloss.Color("#59615D")
+	dashCanvas     = lipgloss.Color("#111513")
+	dashSelected   = lipgloss.Color("#1C2923")
+	dashRule       = lipgloss.Color("#2A322E")
+	dashDanger     = lipgloss.Color("#E38B84")
+	dashTitleStyle = lipgloss.NewStyle().Foreground(dashInk).Bold(true)
+	dashMetaStyle  = lipgloss.NewStyle().Foreground(dashMuted)
+	dashKeyStyle   = lipgloss.NewStyle().Foreground(dashMint).Bold(true)
+)
+
+func (m agentDashboardModel) View() string {
 	if m.width == 0 || m.height == 0 {
-		return "Loading..."
+		return "Opening agent manager…"
 	}
-
-	// Help overlay
-	if m.view == dashViewHelp {
-		return m.viewHelp()
-	}
-
-	// Title bar
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("212")).
-		Render("  tsp dash — Mission Control")
-	title = ansi.Truncate(title, m.width, "")
-
-	modalHeight := 0
+	var view string
 	switch m.mode {
-	case dashConfirmKill, dashConfirmDiscard, dashContinuePrompt, dashStatusMessage:
-		modalHeight = 1
-	}
-
-	panelOuterHeight := m.height - 2 - modalHeight // title + legend + optional modal
-	if panelOuterHeight < 3 {
-		panelOuterHeight = 3
-	}
-
-	panelStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
-		Padding(0, 1)
-	panelFrameWidth, panelFrameHeight := panelStyle.GetFrameSize()
-	panelContentHeight := panelOuterHeight - panelFrameHeight
-	if panelContentHeight < 1 {
-		panelContentHeight = 1
-	}
-
-	leftOuterWidth := m.width * 40 / 100
-	if leftOuterWidth < panelFrameWidth+10 {
-		leftOuterWidth = panelFrameWidth + 10
-	}
-	if leftOuterWidth > m.width-(panelFrameWidth+10) {
-		leftOuterWidth = m.width - (panelFrameWidth + 10)
-	}
-	if leftOuterWidth < panelFrameWidth+1 {
-		leftOuterWidth = panelFrameWidth + 1
-	}
-	rightOuterWidth := m.width - leftOuterWidth
-	if rightOuterWidth < panelFrameWidth+1 {
-		rightOuterWidth = panelFrameWidth + 1
-	}
-	leftWidth := leftOuterWidth - panelFrameWidth
-	rightWidth := rightOuterWidth - panelFrameWidth
-
-	// Left panel: session list
-	now := time.Now()
-	var sessionLines []string
-	start, end := visibleSessionRange(len(m.sessions), m.cursor, panelContentHeight)
-	for i := start; i < end; i++ {
-		s := m.sessions[i]
-		icon := statusIcon(s.status)
-		timeSince := formatTimeSince(s.lastChanged, now)
-
-		nameWidth := leftWidth - 16
-		if nameWidth < 10 {
-			nameWidth = 10
-		}
-		label := truncate(s.name, nameWidth)
-
-		extra := timeSince
-		if s.isGitRepo && s.diffLoaded && s.filesChanged > 0 {
-			extra = fmt.Sprintf("+%d/-%d %s", s.insertions, s.deletions, timeSince)
-		}
-		if s.prNumber > 0 {
-			ciIcon := "…"
-			switch s.ciStatus {
-			case "pass":
-				ciIcon = "✓"
-			case "fail":
-				ciIcon = "✗"
-			}
-			extra = fmt.Sprintf("#%d %s %s", s.prNumber, ciIcon, timeSince)
-		}
-
-		line := fmt.Sprintf(" %s %-*s %s", icon, nameWidth, label, extra)
-		line = ansi.Truncate(line, leftWidth-1, "…")
-
-		if i == m.cursor {
-			style := lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("212")).
-				Background(lipgloss.Color("236"))
-			sessionLines = append(sessionLines, style.Render(fmt.Sprintf("▸%s", line)))
-		} else {
-			sessionLines = append(sessionLines, lipgloss.NewStyle().
-				Foreground(dashStatusColor(s.status)).
-				Render(fmt.Sprintf(" %s", line)))
-		}
-	}
-
-	leftPanel := panelStyle.Copy().
-		Width(leftWidth).
-		Height(panelContentHeight).
-		Render(strings.Join(sessionLines, "\n"))
-
-	// Right panel: session detail + actions
-	rightContent := m.viewDetailPanel(rightWidth, panelContentHeight)
-	rightPanel := panelStyle.Copy().
-		Width(rightWidth).
-		Height(panelContentHeight).
-		Render(rightContent)
-
-	layout := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
-
-	// Legend bar
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	key := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	sep := dim.Render(" │ ")
-
-	legend := "  " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("●") + " active " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("◌") + " idle " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Render("✓") + " done " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("✗") + " error " +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("?") + " waiting" +
-		sep +
-		key.Render("↑↓") + " nav " +
-		key.Render("⏎") + " attach " +
-		key.Render("d") + " diff " +
-		key.Render("x") + " kill " +
-		key.Render("p") + " pr " +
-		key.Render("f") + " fix-ci " +
-		key.Render("r") + " reviews " +
-		key.Render("m") + " merge " +
-		key.Render("?") + " help"
-	legend = ansi.Truncate(legend, m.width, "")
-
-	result := fmt.Sprintf("%s\n%s\n%s", title, layout, legend)
-
-	// Modal overlays
-	switch m.mode {
-	case dashConfirmKill:
-		if m.cursor < len(m.sessions) {
-			result += "\n" + lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196")).Bold(true).
-				Render(fmt.Sprintf("  Kill session '%s'? (y/n)", m.sessions[m.cursor].name))
-		}
-	case dashConfirmDiscard:
-		if m.cursor < len(m.sessions) {
-			result += "\n" + lipgloss.NewStyle().
-				Foreground(lipgloss.Color("196")).Bold(true).
-				Render(fmt.Sprintf("  Discard worktree '%s'? This deletes the branch and directory. (y/n)", m.sessions[m.cursor].name))
-		}
-	case dashContinuePrompt:
-		result += "\n  " + m.textInput.View()
-	case dashStatusMessage:
-		result += "\n" + lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).Bold(true).
-			Render(fmt.Sprintf("  %s (press any key)", m.statusMsg))
-	}
-
-	return result
-}
-
-func (m dashModel) viewDetailPanel(width, height int) string {
-	if len(m.sessions) == 0 || m.cursor >= len(m.sessions) {
-		return "No sessions"
-	}
-	s := m.sessions[m.cursor]
-
-	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-
-	var lines []string
-
-	// Session header
-	lines = append(lines, bold.Render(s.name))
-	lines = append(lines, "")
-
-	// Status
-	statusColor := dashStatusColor(s.status)
-	lines = append(lines, fmt.Sprintf("  %s %s  %s",
-		dim.Render("Status:"),
-		lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(statusIcon(s.status)+" "+s.status),
-		dim.Render(formatTimeSince(s.lastChanged, time.Now())),
-	))
-
-	// Git info
-	if s.isGitRepo {
-		lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("Branch:"), val.Render(s.branch)))
-		if s.isWorktree {
-			lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("  Type:"), val.Render("worktree")))
-		}
-		if s.diffLoaded && s.filesChanged > 0 {
-			lines = append(lines, fmt.Sprintf("  %s %s",
-				dim.Render("  Diff:"),
-				val.Render(fmt.Sprintf("%d files, +%d/-%d", s.filesChanged, s.insertions, s.deletions)),
-			))
-		}
-	} else {
-		lines = append(lines, fmt.Sprintf("  %s %s", dim.Render("   Git:"), dim.Render("not a git repo")))
-	}
-
-	// PR info
-	if s.prNumber > 0 {
-		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("  %s #%d", dim.Render("    PR:"), s.prNumber))
-		ciLabel := s.ciStatus
-		ciColor := lipgloss.Color("245")
-		switch s.ciStatus {
-		case "pass":
-			ciLabel = "✓ passing"
-			ciColor = lipgloss.Color("82")
-		case "fail":
-			ciLabel = "✗ failing"
-			ciColor = lipgloss.Color("196")
-		case "pending":
-			ciLabel = "… pending"
-			ciColor = lipgloss.Color("226")
-		}
-		lines = append(lines, fmt.Sprintf("  %s %s",
-			dim.Render("    CI:"),
-			lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel),
-		))
-		if s.reviewCount > 0 {
-			lines = append(lines, fmt.Sprintf("  %s %s",
-				dim.Render("Reviews:"),
-				val.Render(fmt.Sprintf("%d comments", s.reviewCount)),
-			))
-		}
-	}
-
-	// Operation status
-	if m.statusMsg != "" {
-		lines = append(lines, "")
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render(fmt.Sprintf("  ⟳ %s", m.statusMsg)))
-	}
-
-	// Actions section
-	lines = append(lines, "")
-	lines = append(lines, bold.Render("Actions"))
-
-	actionDim := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	actionKey := lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-
-	lines = append(lines, fmt.Sprintf("  %s attach   %s send prompt", actionKey.Render("⏎"), actionKey.Render("c")))
-	lines = append(lines, fmt.Sprintf("  %s kill     %s toggle diff", actionKey.Render("x"), actionKey.Render("d")))
-	if s.isGitRepo {
-		lines = append(lines, fmt.Sprintf("  %s create PR", actionKey.Render("p")))
-		if s.prNumber > 0 {
-			lines = append(lines, fmt.Sprintf("  %s fix CI   %s address reviews", actionKey.Render("f"), actionKey.Render("r")))
-			lines = append(lines, fmt.Sprintf("  %s merge    %s cleanup merged", actionKey.Render("m"), actionKey.Render("W")))
-		} else {
-			lines = append(lines, actionDim.Render("  (create PR to unlock CI/review/merge actions)"))
-		}
-	}
-
-	// If diff view is active, show diff content below actions
-	if m.view == dashViewDiff {
-		lines = append(lines, "")
-		lines = append(lines, bold.Render("Diff"))
-		if !s.isGitRepo {
-			lines = append(lines, dim.Render("  (not a git repo)"))
-		} else if !s.diffLoaded {
-			lines = append(lines, dim.Render("  (loading...)"))
-		} else if s.diffOutput == "" {
-			lines = append(lines, dim.Render("  (no changes)"))
-		} else {
-			diffLines := strings.Split(s.diffOutput, "\n")
-			maxDiff := height - len(lines) - 2
-			if maxDiff > 0 && len(diffLines) > maxDiff {
-				diffLines = diffLines[:maxDiff]
-			}
-			for _, dl := range diffLines {
-				if strings.HasPrefix(dl, "+") {
-					lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render("  "+dl))
-				} else if strings.HasPrefix(dl, "-") {
-					lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("  "+dl))
-				} else {
-					lines = append(lines, dim.Render("  "+dl))
-				}
-			}
-		}
-	} else {
-		// Live pane preview (compact, last N lines)
-		lines = append(lines, "")
-		lines = append(lines, bold.Render("Live"))
-		content := s.paneContent
-		if content == "" {
-			lines = append(lines, dim.Render("  (no content)"))
-		} else {
-			paneLines := strings.Split(content, "\n")
-			maxPane := height - len(lines) - 2
-			if maxPane > 0 && len(paneLines) > maxPane {
-				paneLines = paneLines[len(paneLines)-maxPane:]
-			}
-			lines = append(lines, paneLines...)
-		}
-	}
-
-	return boundLines(lines, width, height)
-}
-
-func (m dashModel) viewHelp() string {
-	help := lipgloss.NewStyle().
-		Width(m.width-4).
-		Padding(2, 4).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("212")).
-		Render(strings.Join([]string{
-			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render("Dashboard — Key Bindings"),
-			"",
-			lipgloss.NewStyle().Bold(true).Render("Navigation"),
-			"  j/k or arrows   Navigate sessions",
-			"  tab              Cycle panes (live view)",
-			"  enter            Jump to selected session",
-			"  d                Toggle live preview / diff view",
-			"  q / esc          Quit",
-			"",
-			lipgloss.NewStyle().Bold(true).Render("Actions (all sessions)"),
-			"  x                Kill session (or discard worktree)",
-			"  c                Send follow-up prompt to agent",
-			"",
-			lipgloss.NewStyle().Bold(true).Render("Actions (git repo sessions)"),
-			"  p                Create PR (push + gh pr create)",
-			"  m                Merge branch to base (worktree: full cleanup, regular: merge + delete)",
-			"  f                Fix CI — fetch failing logs, send to agent",
-			"  r                Review — fetch PR comments, send to agent",
-			"  W                Clean up merged branch (worktree: full cleanup, regular: delete branch)",
-			"",
-			lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("Press any key to close this help"),
-		}, "\n"))
-
-	// Center vertically
-	padding := (m.height - strings.Count(help, "\n") - 2) / 2
-	if padding < 0 {
-		padding = 0
-	}
-	return strings.Repeat("\n", padding) + help
-}
-
-func dashStatusColor(status string) lipgloss.Color {
-	switch status {
-	case "active":
-		return lipgloss.Color("82") // green
-	case "idle":
-		return lipgloss.Color("245") // gray
-	case "done":
-		return lipgloss.Color("226") // yellow
-	case "error":
-		return lipgloss.Color("196") // red
+	case dashAgentsSpawn:
+		view = m.renderSpawn()
+	case dashAgentsMessage:
+		view = m.renderMessage()
+	case dashAgentsConfirmStop:
+		view = m.renderConfirmation(false)
+	case dashAgentsConfirmCleanup:
+		view = m.renderConfirmation(true)
+	case dashAgentsHelp:
+		view = m.renderHelp()
 	default:
-		return lipgloss.Color("255")
+		view = m.renderDashboard()
 	}
+	return constrainTerminalView(view, m.width, m.height)
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+func (m agentDashboardModel) renderDashboard() string {
+	running := 0
+	for _, agent := range m.agents {
+		if agent.live {
+			running++
+		}
 	}
-	return s[:max-1] + "…"
+	header := lipgloss.NewStyle().
+		Background(dashCanvas).
+		Foreground(dashInk).
+		Padding(0, 1).
+		Render(fmt.Sprintf("tsp / agents   %d running · %d tracked", running, len(m.agents)))
+	project := dashMetaStyle.Render("spawn target  " + m.cwd)
+	bodyHeight := max(5, m.height-5)
+
+	var body string
+	if len(m.agents) == 0 {
+		body = m.renderEmpty(bodyHeight)
+	} else if m.width < 86 {
+		listHeight := min(bodyHeight/2, max(5, len(m.agents)*3+1))
+		body = lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.renderRoster(m.width, listHeight),
+			m.renderDetail(m.width, max(4, bodyHeight-listHeight)),
+		)
+	} else {
+		rosterWidth := max(30, m.width*36/100)
+		detailWidth := max(40, m.width-rosterWidth-1)
+		body = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderRoster(rosterWidth, bodyHeight),
+			lipgloss.NewStyle().Foreground(dashRule).Render("│"),
+			m.renderDetail(detailWidth, bodyHeight),
+		)
+	}
+
+	footerText := "n new   m message   enter attach   s stop   x clean   r refresh   ? help   q quit"
+	if m.width < 86 {
+		footerText = "n new  m msg  enter attach  s stop  x clean  r refresh  ? help  q quit"
+	}
+	if m.busy {
+		footerText = "◌ " + m.statusMessage
+	} else if m.statusMessage != "" {
+		footerText = m.statusMessage
+	}
+	footer := lipgloss.NewStyle().Foreground(dashMuted).Padding(0, 1).Render(footerText)
+	return lipgloss.JoinVertical(lipgloss.Left, header, project, body, footer)
 }
 
-func visibleSessionRange(total, cursor, maxRows int) (int, int) {
-	if total <= 0 || maxRows <= 0 {
-		return 0, 0
+func (m agentDashboardModel) renderEmpty(height int) string {
+	lines := []string{
+		"",
+		dashTitleStyle.Render("No agents in the roster"),
+		dashMetaStyle.Render("Spawn one in this project, or refresh after starting an agent elsewhere."),
+		"",
+		dashKeyStyle.Render("n") + dashMetaStyle.Render("  new agent"),
 	}
-	if maxRows >= total {
-		return 0, total
-	}
-	if cursor < 0 {
-		cursor = 0
-	} else if cursor >= total {
-		cursor = total - 1
-	}
-	start := cursor - maxRows/2
-	if start < 0 {
-		start = 0
-	}
-	if start+maxRows > total {
-		start = total - maxRows
-	}
-	return start, start + maxRows
+	return lipgloss.NewStyle().Width(max(1, m.width-2)).Height(height).PaddingLeft(2).Render(strings.Join(lines, "\n"))
 }
 
-func boundLines(lines []string, width, maxLines int) string {
-	if maxLines <= 0 {
+func (m agentDashboardModel) renderRoster(width, height int) string {
+	contentWidth := max(12, width-3)
+	lines := []string{lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("AGENT ROSTER")}
+	rowsVisible := max(1, (height-1)/3)
+	start := 0
+	if m.cursor >= rowsVisible {
+		start = m.cursor - rowsVisible + 1
+	}
+	end := min(len(m.agents), start+rowsVisible)
+	for index := start; index < end; index++ {
+		agent := m.agents[index]
+		statusColor := dashFaint
+		statusGlyph := "○"
+		if agent.live {
+			statusColor = dashMint
+			statusGlyph = "●"
+		} else if agent.sessionExists {
+			statusColor = dashAmber
+			statusGlyph = "◌"
+		}
+		provider := strings.ToUpper(agent.provider())
+		title := ansi.Truncate(agent.title(), max(8, contentWidth-2), "…")
+		meta := fmt.Sprintf("%s · pane %d", agent.run.SessionName, agent.run.PaneIndex)
+		if agent.branch != "" {
+			meta = agent.branch
+		}
+		row := fmt.Sprintf(
+			"%s %s\n  %s\n  %s",
+			lipgloss.NewStyle().Foreground(statusColor).Render(statusGlyph),
+			lipgloss.NewStyle().Foreground(dashMuted).Bold(true).Render(provider),
+			dashTitleStyle.Render(title),
+			dashMetaStyle.Render(ansi.Truncate(meta, max(8, contentWidth-2), "…")),
+		)
+		style := lipgloss.NewStyle().Width(contentWidth).PaddingLeft(1)
+		if index == m.cursor {
+			style = style.Background(dashSelected)
+		}
+		lines = append(lines, style.Render(row))
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).PaddingLeft(1).Render(strings.Join(lines, "\n"))
+}
+
+func (m agentDashboardModel) renderDetail(width, height int) string {
+	agent, ok := m.selected()
+	if !ok {
 		return ""
 	}
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
+	contentWidth := max(16, width-4)
+	statusColor := dashMint
+	if !agent.live {
+		statusColor = dashAmber
 	}
-	if width <= 0 {
-		return strings.Join(lines, "\n")
+	title := ansi.Truncate(agent.title(), contentWidth, "…")
+	lines := []string{
+		dashTitleStyle.Render(title),
+		lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(strings.ToUpper(agent.status())) +
+			dashMetaStyle.Render("  "+strings.ToUpper(agent.provider())),
+		"",
+		dashMetaStyle.Render("session   ") + agent.run.SessionName,
+		dashMetaStyle.Render("project   ") + firstNonEmpty(agent.run.CWD, "—"),
+		dashMetaStyle.Render("branch    ") + firstNonEmpty(agent.branch, "—"),
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("CONTROLS"),
+		dashKeyStyle.Render("m") + " message   " + dashKeyStyle.Render("enter") + " attach   " +
+			dashKeyStyle.Render("s") + " stop   " + dashKeyStyle.Render("x") + " clean",
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("OUTPUT SNAPSHOT") +
+			dashMetaStyle.Render("  press r to refresh"),
 	}
-	bounded := make([]string, len(lines))
-	for i, line := range lines {
-		bounded[i] = ansi.Truncate(line, width, "…")
+	outputLines := nonEmptyTail(agent.output, max(1, height-len(lines)-2))
+	if len(outputLines) == 0 {
+		outputLines = []string{"No output captured."}
 	}
-	return strings.Join(bounded, "\n")
+	for _, line := range outputLines {
+		lines = append(lines, lipgloss.NewStyle().Foreground(dashMuted).Render(ansi.Truncate(line, contentWidth, "…")))
+	}
+	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
+}
+
+func nonEmptyTail(text string, limit int) []string {
+	raw := strings.Split(strings.TrimSpace(text), "\n")
+	var lines []string
+	for _, line := range raw {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, strings.TrimRight(line, " "))
+		}
+	}
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return lines
+}
+
+func (m agentDashboardModel) renderSpawn() string {
+	command := "agent"
+	if m.cfg != nil && m.cfg.Spawn.AgentCommand != "" {
+		command = m.cfg.Spawn.AgentCommand
+	}
+	lines := []string{
+		dashTitleStyle.Render("Spawn an agent"),
+		dashMetaStyle.Render("Creates an isolated worktree when the target is a git repository."),
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("TASK"),
+		m.taskInput.View(),
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("PROJECT PATH"),
+		m.pathInput.View(),
+		"",
+		dashMetaStyle.Render("command  ") + command,
+		"",
+		dashKeyStyle.Render("tab") + " switch field   " + dashKeyStyle.Render("enter") + " spawn   " + dashKeyStyle.Render("esc") + " cancel",
+	}
+	return m.renderModalFrame(lines)
+}
+
+func (m agentDashboardModel) renderMessage() string {
+	agent, _ := m.selected()
+	lines := []string{
+		dashTitleStyle.Render("Message " + agent.provider()),
+		dashMetaStyle.Render(agent.run.SessionName),
+		"",
+		m.taskInput.View(),
+		"",
+		dashKeyStyle.Render("enter") + " send   " + dashKeyStyle.Render("esc") + " cancel",
+	}
+	return m.renderModalFrame(lines)
+}
+
+func (m agentDashboardModel) renderConfirmation(cleanup bool) string {
+	agent, _ := m.selected()
+	title := "Stop this agent?"
+	description := "Sends Ctrl-C to the agent pane and leaves its session and files in place."
+	if cleanup {
+		title = "Remove this agent workspace?"
+		description = "Kills the tmux session and removes the managed worktree and branch."
+	}
+	lines := []string{
+		lipgloss.NewStyle().Foreground(dashDanger).Bold(true).Render(title),
+		dashTitleStyle.Render(agent.title()),
+		dashMetaStyle.Render(description),
+		"",
+		dashKeyStyle.Render("y / enter") + " confirm   " + dashKeyStyle.Render("n / esc") + " cancel",
+	}
+	return m.renderModalFrame(lines)
+}
+
+func (m agentDashboardModel) renderHelp() string {
+	lines := []string{
+		dashTitleStyle.Render("Agent manager"),
+		dashMetaStyle.Render("A deliberate snapshot of local terminal agents—no CI or output polling."),
+		"",
+		"  " + dashKeyStyle.Render("n") + "          Spawn an agent in a project",
+		"  " + dashKeyStyle.Render("m") + "          Send a follow-up prompt",
+		"  " + dashKeyStyle.Render("enter") + "      Attach to the tmux session",
+		"  " + dashKeyStyle.Render("s") + "          Interrupt the agent process",
+		"  " + dashKeyStyle.Render("x") + "          Remove session, worktree, and branch",
+		"  " + dashKeyStyle.Render("r") + "          Refresh the agent/output snapshot",
+		"  " + dashKeyStyle.Render("j / k") + "      Move through the roster",
+		"  " + dashKeyStyle.Render("q") + "          Quit",
+		"",
+		dashMetaStyle.Render("Press any key to close."),
+	}
+	return m.renderModalFrame(lines)
+}
+
+func (m agentDashboardModel) renderModalFrame(lines []string) string {
+	frameWidth := min(max(36, m.width-8), 84)
+	return lipgloss.NewStyle().
+		Width(frameWidth).
+		Padding(1, 2).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(dashRule).
+		Margin(1, 2).
+		Render(strings.Join(lines, "\n"))
+}
+
+func constrainTerminalView(view string, width, height int) string {
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for index, line := range lines {
+		lines[index] = ansi.Truncate(line, max(1, width), "")
+	}
+	return strings.Join(lines, "\n")
 }

@@ -77,18 +77,12 @@ func TestLoad_EditorFallback(t *testing.T) {
 	}
 }
 
-func TestLoadDashConfig(t *testing.T) {
+func TestLoadSpawnConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	content := []byte(`
 directories:
   - ~/projects
-dash:
-  refresh_ms: 300
-  error_patterns:
-    - "FAIL"
-    - "panic:"
-  prompt_pattern: "\\$\\s*$"
 spawn:
   worktree_base: ~/work/code
   agent_command: "claude --dangerously-skip-permissions"
@@ -100,15 +94,6 @@ spawn:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Dash.RefreshMs != 300 {
-		t.Errorf("expected refresh_ms 300, got %d", cfg.Dash.RefreshMs)
-	}
-	if len(cfg.Dash.ErrorPatterns) != 2 {
-		t.Errorf("expected 2 error patterns, got %d", len(cfg.Dash.ErrorPatterns))
-	}
-	if cfg.Dash.PromptPattern != "\\$\\s*$" {
-		t.Errorf("unexpected prompt pattern: %s", cfg.Dash.PromptPattern)
-	}
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("unexpected agent command: %s", cfg.Spawn.AgentCommand)
 	}
@@ -117,7 +102,7 @@ spawn:
 	}
 }
 
-func TestDashConfigDefaults(t *testing.T) {
+func TestSpawnConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	os.WriteFile(configPath, []byte("directories:\n  - ~/projects\n"), 0644)
@@ -126,11 +111,11 @@ func TestDashConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Dash.RefreshMs != 500 {
-		t.Errorf("expected default refresh_ms 500, got %d", cfg.Dash.RefreshMs)
-	}
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("expected default agent command, got: %s", cfg.Spawn.AgentCommand)
+	}
+	if cfg.Projects.Path == "" {
+		t.Error("expected project path default, got empty")
 	}
 }
 
@@ -141,7 +126,6 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 	original := &Config{
 		Directories: []string{"/tmp/a", "/tmp/b"},
 		Editor:      "code",
-		Sandbox:     Sandbox{Path: "/tmp/sandbox"},
 		Projects:    Projects{Path: "/tmp/projects"},
 	}
 
@@ -206,5 +190,31 @@ func TestLoad_NewPathTakesPriority(t *testing.T) {
 	}
 	if cfg.Editor != "new" {
 		t.Errorf("Editor = %q, want \"new\"", cfg.Editor)
+	}
+}
+
+func TestLoad_IgnoresRemovedLegacySections(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`
+projects:
+  path: /tmp/projects
+dash:
+  refresh_ms: 100
+serve:
+  port: 7777
+watcher:
+  enabled: true
+sandbox:
+  path: /tmp/sandbox
+`)
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("legacy keys should be ignored, got error: %v", err)
+	}
+	if cfg.Projects.Path != "/tmp/projects" {
+		t.Fatalf("active project config was not loaded: %#v", cfg.Projects)
 	}
 }
