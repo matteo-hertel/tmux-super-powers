@@ -9,18 +9,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultManagerAgentCommand = "claude -p --model haiku --permission-mode auto --max-budget-usd 1"
+
 type Config struct {
-	Directories       []string    `yaml:"directories"`
-	IgnoreDirectories []string    `yaml:"ignore_directories"`
-	Projects          Projects    `yaml:"projects"`
-	Editor            string      `yaml:"editor"`
-	Spawn             SpawnConfig `yaml:"spawn"`
+	Directories       []string      `yaml:"directories"`
+	IgnoreDirectories []string      `yaml:"ignore_directories"`
+	Projects          Projects      `yaml:"projects"`
+	Editor            string        `yaml:"editor"`
+	Spawn             SpawnConfig   `yaml:"spawn"`
+	Manager           ManagerConfig `yaml:"manager"`
 }
 
 type SpawnConfig struct {
 	WorktreeBase string `yaml:"worktree_base"`
 	AgentCommand string `yaml:"agent_command"`
 	DefaultSetup string `yaml:"default_setup"`
+}
+
+// ManagerConfig controls short-lived agents delegated from tsp dash. The
+// default is deliberately cheaper than the primary spawn agent and exits when
+// the delegated task is complete.
+type ManagerConfig struct {
+	AgentCommand string `yaml:"agent_command"`
 }
 
 type Projects struct {
@@ -127,6 +137,9 @@ func LoadFrom(configPath string) (*Config, error) {
 	if cfg.Spawn.WorktreeBase == "" {
 		cfg.Spawn.WorktreeBase = filepath.Join(homeDir, "work", "code")
 	}
+	if cfg.Manager.AgentCommand == "" {
+		cfg.Manager.AgentCommand = defaultManagerAgentCommand
+	}
 
 	return &cfg, nil
 }
@@ -165,6 +178,9 @@ func defaultConfig() *Config {
 			WorktreeBase: filepath.Join(homeDir, "work", "code"),
 			AgentCommand: "claude --dangerously-skip-permissions",
 		},
+		Manager: ManagerConfig{
+			AgentCommand: defaultManagerAgentCommand,
+		},
 	}
 }
 
@@ -200,6 +216,10 @@ func Repair(cfg *Config) ([]string, *Config) {
 	if cfg.Spawn.WorktreeBase == "" {
 		cfg.Spawn.WorktreeBase = defaults.Spawn.WorktreeBase
 		changes = append(changes, "spawn.worktree_base: set to default")
+	}
+	if cfg.Manager.AgentCommand == "" {
+		cfg.Manager.AgentCommand = defaults.Manager.AgentCommand
+		changes = append(changes, "manager.agent_command: set to default")
 	}
 	return changes, cfg
 }

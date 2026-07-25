@@ -87,3 +87,21 @@ func TestTaskToBranchTruncation(t *testing.T) {
 		t.Error("branch name should not end with hyphen")
 	}
 }
+
+func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
+	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", "", "claude -p"); err == nil {
+		t.Fatal("SpawnDelegatedAgent accepted an empty workspace")
+	}
+
+	filePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "", "", "claude -p"); err == nil {
+		t.Fatal("SpawnDelegatedAgent accepted a file as its workspace")
+	}
+
+	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "", "", ""); err == nil {
+		t.Fatal("SpawnDelegatedAgent accepted an empty manager command")
+	}
+}

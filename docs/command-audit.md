@@ -15,7 +15,7 @@ personal invocation frequency.
 | `tsp project` | Keep | Single canonical project creator. |
 | `tsp list` (`txl`) | Keep | General tmux session picker; broader than the agent roster. |
 | `tsp spawn` | Keep and refactor | Core agent launcher; now shares the service path with the dashboard, supports Claude/Codex command overrides, and records managed runs. |
-| `tsp dash` | Keep and replace | Now an on-demand agent manager: spawn, message, attach, interrupt, clean, and refresh. |
+| `tsp dash` | Keep and replace | Now an on-demand agent manager: spawn, delegate child agents, attach, interrupt, clean, and refresh. It does not inject follow-up keystrokes into agent terminals. |
 | `tsp rm` | Keep | Session-oriented cleanup with worktree awareness. |
 | `tsp cleanup` | Keep | Finds orphaned directories/worktrees under the configured worktree base even when no tmux session exists. |
 | `tsp wtx-new` | Keep | Manual multi-worktree creation without assigning agents. |
@@ -38,7 +38,7 @@ personal invocation frequency.
 | `tsp new` | Remove | Wrapper duplicated `project`/`sandbox` while its advertised positional name was not used. |
 | `tsp sandbox` | Remove | Duplicate project creator backed by an otherwise unused config section. |
 | `tsp duck` | Remove | Novelty daemon/socket/popup unrelated to the focused project and agent workflow. |
-| Dashboard PR/CI/review actions | Remove | Mixed agent control with GitHub lifecycle automation and required polling/state inference. Native agent and GitHub tools handle that work better. |
+| Dashboard PR/CI polling and fixed review actions | Remove | Mixed agent control with GitHub lifecycle automation and required polling/state inference. A user-requested delegated agent can investigate or repair CI without rebuilding a watcher into TSP. |
 
 ## Dependency and code impact
 

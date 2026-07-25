@@ -12,23 +12,23 @@ The product loop is:
 
 1. Find or create a project with `tsp dir` / `tsp project`.
 2. Spawn isolated coding agents with `tsp spawn`.
-3. Steer them from the on-demand `tsp dash` roster.
-4. Attach, interrupt, or clean their tmux/worktree resources explicitly.
+3. Delegate follow-up jobs from the on-demand `tsp dash` roster.
+4. Attach, interrupt, or clean parent/child tmux and worktree resources explicitly.
 
 ## Architecture
 
 ```text
 cmd/tsp/main.go
 └── internal/cmd/            Cobra commands and Bubble Tea TUIs
-    ├── dash.go              Agent roster and direct controls
+    ├── dash.go              Parent/child agent roster and direct controls
     ├── spawn.go             CLI adapter for agent creation
     ├── dir.go/project.go    Project navigation and creation
     └── gtmux*.go/rm.go      Worktree and tmux lifecycle
 
 config/config.go             ~/.tsp/config.yaml load/default/repair
 internal/service/
-├── spawn.go                 Branch/worktree/session creation
-├── agentrun.go              Durable ~/.tsp/agent-runs.json registry
+├── spawn.go                 Branch/worktree/session and in-place delegation
+├── agentrun.go              Durable parent/child run registry
 └── sessions.go              One-shot tmux/process/git inspection and actions
 internal/tmux/tmux.go        Tmux command boundary
 internal/pathutil/           Path expansion and directory helpers
@@ -45,7 +45,7 @@ once at startup and once per explicit refresh/action.
 | `tsp project` | Create a project and tmux session. |
 | `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Spawn, message, attach, interrupt, clean, and refresh agents. |
+| `tsp dash` | Spawn, delegate, attach, interrupt, clean, and refresh agents. |
 | `tsp rm` | Remove sessions with worktree awareness. |
 | `tsp cleanup` | Remove orphaned worktree-base entries. |
 | `tsp wtx-new` | Create manual worktree sessions. |
@@ -68,6 +68,7 @@ None. `tsp` exposes no network server or remote-control API.
 | `~/.tsp/config.yaml` | User configuration. |
 | `~/.tsp/agent-runs.json` | Durable metadata for agents created or observed by the dashboard. |
 | `spawn.worktree_base` | Parent directory for generated agent worktrees. |
+| `manager.agent_command` | Inexpensive non-interactive agent used for delegated jobs. |
 
 Unknown legacy YAML keys are ignored, so old configurations containing
 `dash`, `serve`, `watcher`, or `sandbox` sections still load.
@@ -87,8 +88,16 @@ Do not start a local server; the project has no server runtime.
 ## Gotchas
 
 - `tsp dash` must run inside tmux because `Enter` switches the active client.
-- `tsp spawn` passes the task as a shell-quoted CLI argument. Keep quoting in
-  `internal/service/spawn.go`; `send-keys` is only for follow-up prompts.
+- `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI
+  arguments. Keep quoting in `internal/service/spawn.go`; do not restore
+  follow-up prompt injection with `tmux send-keys`.
+- Delegated runs share their parent's retained workspace and never own it.
+  Enforce one active writer per workspace, and let only the owning root run
+  remove the worktree and branch.
+- Manager tasks with clear stop/cleanup intent route to native confirmed TSP
+  actions. Do not let a delegated model delete its own workspace.
+- One-shot delegated agent panes use tmux `remain-on-exit`; discovery must skip
+  dead panes as live processes while preserving their captured final output.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a

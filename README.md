@@ -49,12 +49,16 @@ tsp dash
 ```
 
 The manager takes a snapshot only when it opens or when you press `r`; it does
-not poll pane output or CI.
+not poll pane output or CI. Delegation starts a new inexpensive child agent in
+the retained workspace instead of injecting keystrokes into the old process.
+Natural-language lifecycle requests such as `delete this worktree` resolve to
+the same exact-target confirmation used by the native Clean control; the model
+never owns workspace deletion.
 
 | Key | Action |
 |---|---|
 | `n` | Spawn an agent in a project |
-| `m` | Send a follow-up prompt |
+| `d` | Delegate follow-up work to a child agent |
 | `Enter` | Attach to the agent's tmux session |
 | `s` | Interrupt the agent process with `Ctrl-C` |
 | `x` | Remove the session and its managed worktree/branch |
@@ -64,7 +68,8 @@ not poll pane output or CI.
 
 `tsp` recognizes Claude Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
-available for deliberate cleanup.
+available for delegation and deliberate cleanup. A workspace has one active
+writer: stop its current agent before delegating another mutating task.
 
 ## Manual worktrees
 
@@ -98,7 +103,13 @@ spawn:
   worktree_base: ~/work/code
   agent_command: claude --dangerously-skip-permissions
   default_setup: ""
+
+manager:
+  agent_command: claude -p --model haiku --permission-mode auto --max-budget-usd 1
 ```
+
+The manager command is configurable. For Codex, use a non-interactive command
+such as `codex exec --ephemeral --sandbox workspace-write`.
 
 Use `tsp config repair` to fill missing active settings. Old `dash`, `serve`,
 `watcher`, and `sandbox` keys are safely ignored by the YAML loader.

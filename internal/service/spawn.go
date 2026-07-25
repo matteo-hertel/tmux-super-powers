@@ -73,6 +73,54 @@ type SpawnResult struct {
 	AgentRunID   string `json:"agentRunId,omitempty"`
 }
 
+// SpawnDelegatedAgent starts a short-lived agent in an existing workspace. It
+// deliberately creates no branch or worktree: the caller records the new run
+// as a child of the run that owns the workspace.
+func SpawnDelegatedAgent(task, prompt, dir, branch, gitPath, agentCommand string) (SpawnResult, error) {
+	dir = pathutil.ExpandPath(strings.TrimSpace(dir))
+	result := SpawnResult{
+		Task:         task,
+		Branch:       branch,
+		WorktreePath: dir,
+		GitPath:      gitPath,
+	}
+	if dir == "" {
+		return result, fmt.Errorf("delegation workspace is required")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return result, fmt.Errorf("delegation workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return result, fmt.Errorf("delegation workspace is not a directory: %s", dir)
+	}
+	agentCommand = strings.TrimSpace(agentCommand)
+	if agentCommand == "" {
+		return result, fmt.Errorf("manager agent command is required")
+	}
+
+	suffix := memorableSuffix()
+	slug := strings.TrimPrefix(TaskToBranch(task), "spawn/")
+	sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-delegate-%s-%s", filepath.Base(dir), slug, suffix))
+	result.Session = sessionName
+
+	if tmuxpkg.SessionExists(sessionName) {
+		if err := tmuxpkg.KillSession(sessionName); err != nil {
+			return result, fmt.Errorf("replace delegated session: %w", err)
+		}
+	}
+	agentWithTask := agentCommand + " " + shellQuote(prompt)
+	if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", agentWithTask); err != nil {
+		return result, fmt.Errorf("delegated session creation failed: %w", err)
+	}
+	if err := tmuxpkg.KeepPaneAfterExit(sessionName + ":0.1"); err != nil {
+		_ = tmuxpkg.KillSession(sessionName)
+		return result, err
+	}
+	result.Status = "ok"
+	return result, nil
+}
+
 // SpawnAgents deploys agents with tasks into worktrees (git repos) or
 // directly in the target directory (non-git directories).
 // If repoDir is non-empty, it is used to find the git repo root; otherwise the

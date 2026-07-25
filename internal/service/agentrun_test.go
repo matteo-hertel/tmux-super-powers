@@ -189,3 +189,90 @@ func TestAgentRunRegistryRegistersManagedAgentAndReusesIt(t *testing.T) {
 		t.Fatal("deleted managed run is still present")
 	}
 }
+
+func TestAgentRunRegistryPersistsDelegationHierarchy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	reg, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	now := time.Date(2026, 7, 25, 14, 0, 0, 0, time.UTC)
+	root, err := reg.RegisterManaged(SpawnResult{
+		Task:         "build the agent manager",
+		Branch:       "spawn/agent-manager",
+		Session:      "tsp-agent-manager",
+		WorktreePath: "/work/tsp-agent-manager",
+		GitPath:      "/code/tsp",
+	}, AgentProviderCodex, 1, now)
+	if err != nil {
+		t.Fatalf("RegisterManaged: %v", err)
+	}
+	child, err := reg.RegisterDelegated(SpawnResult{
+		Task:         "make CI green",
+		Branch:       root.Branch,
+		Session:      "tsp-agent-manager-delegate-ci",
+		WorktreePath: root.WorktreePath,
+		GitPath:      root.GitPath,
+	}, AgentProviderClaude, root.ID, 1, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("RegisterDelegated: %v", err)
+	}
+	grandchild, err := reg.RegisterDelegated(SpawnResult{
+		Task:         "re-run the failing integration test",
+		Branch:       root.Branch,
+		Session:      "tsp-agent-manager-delegate-integration",
+		WorktreePath: root.WorktreePath,
+		GitPath:      root.GitPath,
+	}, AgentProviderClaude, child.ID, 1, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("RegisterDelegated grandchild: %v", err)
+	}
+
+	descendants := reg.Descendants(root.ID)
+	if len(descendants) != 2 {
+		t.Fatalf("Descendants() count = %d, want 2", len(descendants))
+	}
+	if descendants[0].ID != grandchild.ID || descendants[1].ID != child.ID {
+		t.Fatalf("Descendants() = %#v, want children before parents", descendants)
+	}
+
+	reloaded, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	persisted, ok := reloaded.Find(child.ID)
+	if !ok {
+		t.Fatalf("delegated run %q was not persisted", child.ID)
+	}
+	if persisted.ParentRunID != root.ID || persisted.WorktreePath != root.WorktreePath {
+		t.Fatalf("delegated metadata not preserved: %#v", persisted)
+	}
+}
+
+func TestAgentRunRegistryRequiresParentForDelegation(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	_, err = reg.RegisterDelegated(SpawnResult{Session: "delegate"}, AgentProviderClaude, "", 1, time.Now())
+	if err == nil {
+		t.Fatal("RegisterDelegated accepted an empty parent run")
+	}
+	_, err = reg.RegisterDelegated(SpawnResult{Session: "delegate"}, AgentProviderClaude, "missing", 1, time.Now())
+	if err == nil {
+		t.Fatal("RegisterDelegated accepted an unknown parent run")
+	}
+}
+
+func TestAgentRunRegistryDescendantsToleratesCycle(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	reg.runs["root"] = AgentRun{ID: "root", ParentRunID: "child"}
+	reg.runs["child"] = AgentRun{ID: "child", ParentRunID: "root"}
+	descendants := reg.Descendants("root")
+	if len(descendants) != 1 || descendants[0].ID != "child" {
+		t.Fatalf("Descendants() with cycle = %#v, want only child", descendants)
+	}
+}

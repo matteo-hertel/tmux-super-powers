@@ -186,6 +186,15 @@ func GetPaneProcess(session string, pane int) string {
 	return strings.TrimSpace(string(out))
 }
 
+// IsPaneDead reports whether tmux is retaining a pane whose command has
+// already exited.
+func IsPaneDead(session string, pane int) bool {
+	target := fmt.Sprintf("%s:0.%d", session, pane)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_dead}")
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "1"
+}
+
 // GetPaneCount returns the number of panes in a session's first window.
 func GetPaneCount(session string) int {
 	cmd := exec.Command("tmux", "list-panes", "-t", session, "-F", "#{pane_index}")
@@ -359,12 +368,6 @@ func CreateSession(name, dir, leftCmd, rightCmd string) error {
 		return fmt.Errorf("session %q already exists", name)
 	}
 	return tmuxpkg.CreateTwoPaneSession(name, dir, leftCmd, rightCmd)
-}
-
-// SendToPane sends text (followed by Enter) to a specific pane in a session.
-func SendToPane(session string, pane int, text string) error {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	return tmuxpkg.SendKeys(target, text)
 }
 
 // InterruptPane sends Ctrl-C to a running agent without deleting its session or

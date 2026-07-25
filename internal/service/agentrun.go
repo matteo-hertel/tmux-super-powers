@@ -22,6 +22,7 @@ const (
 // AgentRun is the durable identity for one controllable agent pane.
 type AgentRun struct {
 	ID           string    `json:"id"`
+	ParentRunID  string    `json:"parentRunId,omitempty"`
 	Provider     string    `json:"provider"`
 	Task         string    `json:"task,omitempty"`
 	SessionName  string    `json:"sessionName"`
@@ -181,6 +182,7 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 		run.StartedAt = now
 	}
 	run.ID = id
+	run.ParentRunID = ""
 	run.Provider = provider
 	run.Task = result.Task
 	run.SessionName = result.Session
@@ -195,6 +197,84 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 	r.runs[id] = run
 
 	return run, r.saveLocked()
+}
+
+// RegisterDelegated records an agent that continues work in an existing
+// managed workspace. Delegated runs share their parent's files and branch; they
+// never own or remove that workspace themselves.
+func (r *AgentRunRegistry) RegisterDelegated(result SpawnResult, provider, parentRunID string, paneIndex int, now time.Time) (AgentRun, error) {
+	if r == nil {
+		return AgentRun{}, fmt.Errorf("agent run registry is nil")
+	}
+	if parentRunID == "" {
+		return AgentRun{}, fmt.Errorf("parent agent run is required")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if provider == "" {
+		provider = AgentProviderFallback
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.runs[parentRunID]; !ok {
+		return AgentRun{}, fmt.Errorf("parent agent run %q was not found", parentRunID)
+	}
+
+	id := newAgentRunID()
+	run := AgentRun{
+		ID:           id,
+		ParentRunID:  parentRunID,
+		Provider:     provider,
+		Task:         result.Task,
+		SessionName:  result.Session,
+		PaneIndex:    paneIndex,
+		CWD:          result.WorktreePath,
+		Branch:       result.Branch,
+		WorktreePath: result.WorktreePath,
+		GitPath:      result.GitPath,
+		Status:       "starting",
+		StartedAt:    now,
+		LastSeenAt:   now,
+		Managed:      true,
+	}
+	r.runs[id] = run
+
+	return run, r.saveLocked()
+}
+
+// Descendants returns every run delegated directly or indirectly from id,
+// children before parents. This order lets callers stop child sessions safely
+// before removing an owning workspace.
+func (r *AgentRunRegistry) Descendants(id string) []AgentRun {
+	if r == nil || id == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	children := make(map[string][]AgentRun)
+	for _, run := range r.runs {
+		if run.ParentRunID != "" {
+			children[run.ParentRunID] = append(children[run.ParentRunID], run)
+		}
+	}
+	var descendants []AgentRun
+	seen := map[string]bool{id: true}
+	var walk func(string)
+	walk = func(parentID string) {
+		for _, child := range children[parentID] {
+			if seen[child.ID] {
+				continue
+			}
+			seen[child.ID] = true
+			walk(child.ID)
+			descendants = append(descendants, child)
+		}
+	}
+	walk(id)
+	return descendants
 }
 
 // Delete forgets a managed agent after its session/worktree has been removed.

@@ -110,10 +110,6 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 	}
 }
 
-// SendKeys is tested via integration (requires tmux).
-// The implementation sends literal chunks so URLs and special characters are
-// not interpreted as tmux key names.
-
 func TestBuildCapturePaneArgs(t *testing.T) {
 	args := BuildCapturePaneArgs("mysession:0.1")
 	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e"}
@@ -123,6 +119,19 @@ func TestBuildCapturePaneArgs(t *testing.T) {
 	for i, a := range args {
 		if a != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
+		}
+	}
+}
+
+func TestBuildKeepPaneAfterExitArgs(t *testing.T) {
+	args := BuildKeepPaneAfterExitArgs("mysession:0.1")
+	expected := []string{"set-option", "-p", "-t", "mysession:0.1", "remain-on-exit", "on"}
+	if len(args) != len(expected) {
+		t.Fatalf("BuildKeepPaneAfterExitArgs length = %d, want %d", len(args), len(expected))
+	}
+	for i, arg := range args {
+		if arg != expected[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
 		}
 	}
 }

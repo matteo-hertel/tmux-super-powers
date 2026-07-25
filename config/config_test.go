@@ -87,6 +87,8 @@ spawn:
   worktree_base: ~/work/code
   agent_command: "claude --dangerously-skip-permissions"
   default_setup: "cp ../.env .env"
+manager:
+  agent_command: "codex exec --ephemeral --sandbox workspace-write"
 `)
 	os.WriteFile(configPath, content, 0644)
 
@@ -99,6 +101,9 @@ spawn:
 	}
 	if cfg.Spawn.DefaultSetup != "cp ../.env .env" {
 		t.Errorf("unexpected default setup: %s", cfg.Spawn.DefaultSetup)
+	}
+	if cfg.Manager.AgentCommand != "codex exec --ephemeral --sandbox workspace-write" {
+		t.Errorf("unexpected manager agent command: %s", cfg.Manager.AgentCommand)
 	}
 }
 
@@ -113,6 +118,9 @@ func TestSpawnConfigDefaults(t *testing.T) {
 	}
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("expected default agent command, got: %s", cfg.Spawn.AgentCommand)
+	}
+	if cfg.Manager.AgentCommand != "claude -p --model haiku --permission-mode auto --max-budget-usd 1" {
+		t.Errorf("expected default manager command, got: %s", cfg.Manager.AgentCommand)
 	}
 	if cfg.Projects.Path == "" {
 		t.Error("expected project path default, got empty")
