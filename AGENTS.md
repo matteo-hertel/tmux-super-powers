@@ -92,8 +92,8 @@ Do not start a local server; the project has no server runtime.
   arguments. Keep quoting in `internal/service/spawn.go`; do not restore
   follow-up prompt injection with `tmux send-keys`.
 - Delegated runs share their parent's retained workspace and never own it.
-  Enforce one active writer per workspace, and let only the owning root run
-  remove the worktree and branch.
+  Parent and child agents may run concurrently; surface their relationship
+  clearly, and let only the owning root run remove the worktree and branch.
 - Manager tasks with clear stop/cleanup intent route to native confirmed TSP
   actions. Do not let a delegated model delete its own workspace.
 - One-shot delegated agent panes use tmux `remain-on-exit`; discovery must skip

@@ -134,7 +134,7 @@ func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
 	}
 }
 
-func TestAgentDashboardRequiresExclusiveWorkspaceForDelegation(t *testing.T) {
+func TestAgentDashboardAllowsDelegationWhileParentRuns(t *testing.T) {
 	model := newAgentDashboardModel([]agentEntry{{
 		run: service.AgentRun{
 			ID:           "run-parent",
@@ -156,14 +156,14 @@ func TestAgentDashboardRequiresExclusiveWorkspaceForDelegation(t *testing.T) {
 	got := next.(agentDashboardModel)
 	got.taskInput.SetValue("make CI green")
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("rejected delegation returned an unexpected command")
+	if cmd == nil {
+		t.Fatal("delegation did not return a command")
 	}
 	got = next.(agentDashboardModel)
-	if got.mode != dashAgentsBrowse {
-		t.Fatalf("mode = %v, want dashAgentsBrowse", got.mode)
+	if !got.busy {
+		t.Fatal("dashboard should be busy while the delegated child starts")
 	}
-	if !strings.Contains(got.statusMessage, "one writer per workspace") {
+	if got.statusMessage != "Starting delegated agent…" {
 		t.Fatalf("status message = %q", got.statusMessage)
 	}
 }
@@ -263,6 +263,29 @@ func TestSortAgentEntriesKeepsDelegationsUnderParent(t *testing.T) {
 		if got[index] != want[index] {
 			t.Fatalf("ordered ids = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestAgentDashboardSelectsDelegatedChildAfterStart(t *testing.T) {
+	parent := agentEntry{run: service.AgentRun{ID: "root", Task: "parent", Managed: true}}
+	child := agentEntry{run: service.AgentRun{ID: "child", ParentRunID: "root", Task: "make CI green", Managed: true}}
+	model := newAgentDashboardModel([]agentEntry{parent}, &config.Config{}, nil, "/repo")
+
+	next, cmd := model.Update(agentActionDoneMsg{
+		agents:     []agentEntry{parent, child},
+		message:    "Delegated agent started",
+		selectedID: "child",
+	})
+	if cmd != nil {
+		t.Fatal("completed delegation returned an unexpected command")
+	}
+	got := next.(agentDashboardModel)
+	selected, ok := got.selected()
+	if !ok || selected.run.ID != "child" {
+		t.Fatalf("selected run = %q, want child", selected.run.ID)
+	}
+	if got.statusMessage != "Delegated agent started" {
+		t.Fatalf("status message = %q", got.statusMessage)
 	}
 }
 

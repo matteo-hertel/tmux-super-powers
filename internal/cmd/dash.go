@@ -337,19 +337,6 @@ func (m agentDashboardModel) selected() (agentEntry, bool) {
 	return m.agents[m.cursor], true
 }
 
-func (m agentDashboardModel) workspaceWriter(path string) (agentEntry, bool) {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "." || path == "" {
-		return agentEntry{}, false
-	}
-	for _, agent := range m.agents {
-		if agent.live && filepath.Clean(agent.workspacePath()) == path {
-			return agent, true
-		}
-	}
-	return agentEntry{}, false
-}
-
 func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
@@ -502,11 +489,6 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = dashAgentsConfirmStop
 				m.taskInput.Blur()
 				m.statusMessage = "Stop request resolved to a confirmed TSP action"
-				return m, nil
-			}
-			if writer, busy := m.workspaceWriter(selected.workspacePath()); busy {
-				m.closeModal()
-				m.statusMessage = "Stop " + writer.title() + " before delegating · one writer per workspace"
 				return m, nil
 			}
 			m.busy = true
@@ -1070,7 +1052,7 @@ func (m agentDashboardModel) renderDelegate() string {
 		dashMetaStyle.Render("parent     ") + agent.title(),
 		dashMetaStyle.Render("command    ") + command,
 		"",
-		dashMetaStyle.Render("One writer per workspace. No terminal keystrokes are injected."),
+		dashMetaStyle.Render("Parent and child share this workspace. No terminal keystrokes are injected."),
 		"",
 		dashKeyStyle.Render("enter") + " continue   " + dashKeyStyle.Render("esc") + " cancel",
 	}

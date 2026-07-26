@@ -119,7 +119,7 @@ func TestSpawnConfigDefaults(t *testing.T) {
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("expected default agent command, got: %s", cfg.Spawn.AgentCommand)
 	}
-	if cfg.Manager.AgentCommand != "claude -p --model haiku --permission-mode auto --max-budget-usd 1" {
+	if cfg.Manager.AgentCommand != "claude -p --model haiku --permission-mode auto" {
 		t.Errorf("expected default manager command, got: %s", cfg.Manager.AgentCommand)
 	}
 	if cfg.Projects.Path == "" {

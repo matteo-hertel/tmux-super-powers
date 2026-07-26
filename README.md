@@ -68,8 +68,9 @@ never owns workspace deletion.
 
 `tsp` recognizes Claude Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
-available for delegation and deliberate cleanup. A workspace has one active
-writer: stop its current agent before delegating another mutating task.
+available for delegation and deliberate cleanup. Delegated children appear
+directly beneath their parent and may run concurrently in the same retained
+workspace; only the owning root run can remove its worktree and branch.
 
 ## Manual worktrees
 
@@ -105,7 +106,7 @@ spawn:
   default_setup: ""
 
 manager:
-  agent_command: claude -p --model haiku --permission-mode auto --max-budget-usd 1
+  agent_command: claude -p --model haiku --permission-mode auto
 ```
 
 The manager command is configurable. For Codex, use a non-interactive command

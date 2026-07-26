@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultManagerAgentCommand = "claude -p --model haiku --permission-mode auto --max-budget-usd 1"
+const defaultManagerAgentCommand = "claude -p --model haiku --permission-mode auto"
 
 type Config struct {
 	Directories       []string      `yaml:"directories"`
