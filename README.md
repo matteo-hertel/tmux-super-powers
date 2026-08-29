@@ -53,8 +53,8 @@ as idle. It takes a snapshot only when it opens or when you press `r`; it does
 not poll pane output or CI. Delegation starts a new child pane in the selected
 session and retained workspace instead of injecting keystrokes into the old
 process. The task panel lets you pick Claude or Codex and edit the model for
-that run. When the delegated agent exits, its pane becomes a live shell and its
-full tmux scrollback stays available to the dashboard.
+that run. When the delegated agent exits, its temporary pane closes and its
+bounded tmux scrollback stays available to the dashboard.
 Natural-language lifecycle requests such as `delete this worktree` resolve to
 the same exact-target confirmation used by the native Clean control; the model
 never owns workspace deletion.

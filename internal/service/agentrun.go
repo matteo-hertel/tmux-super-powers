@@ -32,6 +32,7 @@ type AgentRun struct {
 	Branch       string    `json:"branch,omitempty"`
 	WorktreePath string    `json:"worktreePath,omitempty"`
 	GitPath      string    `json:"gitPath,omitempty"`
+	OutputPath   string    `json:"outputPath,omitempty"`
 	Status       string    `json:"status"`
 	StartedAt    time.Time `json:"startedAt"`
 	LastSeenAt   time.Time `json:"lastSeenAt"`
@@ -234,6 +235,7 @@ func (r *AgentRunRegistry) RegisterDelegated(result SpawnResult, provider, paren
 		Branch:       result.Branch,
 		WorktreePath: result.WorktreePath,
 		GitPath:      result.GitPath,
+		OutputPath:   result.OutputPath,
 		Status:       "starting",
 		StartedAt:    now,
 		LastSeenAt:   now,
@@ -281,11 +283,25 @@ func (r *AgentRunRegistry) Delete(id string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.runs[id]; !ok {
+	run, ok := r.runs[id]
+	if !ok {
 		return nil
 	}
+	outputPath, err := delegatedOutputTarget(run.OutputPath)
+	if err != nil {
+		return err
+	}
 	delete(r.runs, id)
-	return r.saveLocked()
+	if err := r.saveLocked(); err != nil {
+		return err
+	}
+	if outputPath == "" {
+		return nil
+	}
+	if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stored agent output: %w", err)
+	}
+	return nil
 }
 
 func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time) error {

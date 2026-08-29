@@ -219,6 +219,18 @@ func CapturePaneContent(session string, pane int) string {
 	return StripANSI(string(out))
 }
 
+func ReadStoredAgentOutput(path string) string {
+	target, err := delegatedOutputTarget(path)
+	if err != nil || target == "" {
+		return ""
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return ""
+	}
+	return StripANSI(string(data))
+}
+
 // GitInfo holds git repository metadata for a session.
 type GitInfo struct {
 	Cwd          string // pane working directory

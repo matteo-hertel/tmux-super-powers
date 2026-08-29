@@ -276,13 +276,62 @@ func TestAgentRunRegistryTracksDelegatedPanesInParentSession(t *testing.T) {
 		t.Fatalf("RegisterManaged: %v", err)
 	}
 	child, err := reg.RegisterDelegated(SpawnResult{
-		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath,
+		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath, OutputPath: "/tmp/delegate.log",
 	}, AgentProviderClaude, root.ID, 2, time.Now())
 	if err != nil {
 		t.Fatalf("RegisterDelegated: %v", err)
 	}
 	if child.SessionName != root.SessionName || child.PaneIndex != 2 {
 		t.Fatalf("delegated target = %s:%d, want %s:2", child.SessionName, child.PaneIndex, root.SessionName)
+	}
+	if child.OutputPath != "/tmp/delegate.log" {
+		t.Fatalf("delegated output path = %q", child.OutputPath)
+	}
+}
+
+func TestAgentRunRegistryDeleteRemovesStoredOutput(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(delegatedOutputDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(delegatedOutputDir(), "delegate-test.log")
+	if err := os.WriteFile(outputPath, []byte("finished"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.runs["child"] = AgentRun{ID: "child", OutputPath: outputPath}
+
+	if err := reg.Delete("child"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("stored output still exists: %v", err)
+	}
+}
+
+func TestAgentRunRegistryDeleteRefusesOutputOutsideManagedDirectory(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	outputPath := filepath.Join(t.TempDir(), "delegate-test.log")
+	if err := os.WriteFile(outputPath, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.runs["child"] = AgentRun{ID: "child", OutputPath: outputPath}
+
+	if err := reg.Delete("child"); err == nil {
+		t.Fatal("Delete() removed a run with an unmanaged output path")
+	}
+	if _, ok := reg.Find("child"); !ok {
+		t.Fatal("run was removed after output validation failed")
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("unmanaged output was removed: %v", err)
 	}
 }
 

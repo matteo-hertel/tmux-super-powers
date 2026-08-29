@@ -136,12 +136,6 @@ Examples:
 	},
 }
 
-// shellQuoteArg wraps s in single quotes, escaping embedded single quotes, so
-// it can be safely interpolated into a shell command run by the agent pane.
-func shellQuoteArg(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
 func init() {
 	spawnCmd.Flags().StringP("file", "f", "", "Read tasks from file (one per line)")
 	spawnCmd.Flags().StringP("base", "b", "", "Base branch for worktrees (default: current branch)")

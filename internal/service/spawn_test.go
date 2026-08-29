@@ -140,6 +140,7 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	t.Cleanup(func() {
 		_ = tmuxpkg.KillSession(sessionName)
 	})
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("SHELL", "/bin/sh")
 
 	result, err := SpawnDelegatedAgent(
@@ -152,20 +153,20 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	if result.Session != sessionName {
 		t.Fatalf("delegated session = %q, want %q", result.Session, sessionName)
 	}
-	if result.PaneIndex == 0 || !tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
-		t.Fatalf("delegated pane %d does not exist in parent session", result.PaneIndex)
+	if result.PaneIndex == 0 {
+		t.Fatal("delegated pane reused the parent pane")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(GetPaneProcess(sessionName, result.PaneIndex), "sh") {
+		if !tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if IsPaneDead(sessionName, result.PaneIndex) {
-		t.Fatal("delegated pane is dead after the agent exits")
+	if tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
+		t.Fatal("delegated pane stayed open after the agent exited")
 	}
-	output := CapturePaneContent(sessionName, result.PaneIndex)
+	output := ReadStoredAgentOutput(result.OutputPath)
 	if !strings.Contains(output, "delegate-line-1") || !strings.Contains(output, "delegate-line-200") {
 		t.Fatalf("delegated output was truncated: %q", output)
 	}

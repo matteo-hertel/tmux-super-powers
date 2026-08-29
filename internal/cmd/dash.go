@@ -233,8 +233,10 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 			gitPath:       run.GitPath,
 			sessionExists: sessionSet[run.SessionName],
 		}
-		if entry.sessionExists {
+		if entry.sessionExists && tmuxpkg.PaneExists(run.SessionName, run.PaneIndex) {
 			entry.output = service.CapturePaneContent(run.SessionName, run.PaneIndex)
+		} else {
+			entry.output = service.ReadStoredAgentOutput(run.OutputPath)
 		}
 		entries = append(entries, entry)
 	}
@@ -881,6 +883,7 @@ func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, pa
 			registered, registerErr := registry.RegisterDelegated(result, managerAgent, parent.run.ID, result.PaneIndex, time.Now().UTC())
 			if registerErr != nil {
 				_ = tmuxpkg.KillPane(result.Session, result.PaneIndex)
+				_ = os.Remove(result.OutputPath)
 				err = registerErr
 			} else {
 				selectedID = registered.ID

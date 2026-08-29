@@ -72,6 +72,7 @@ type SpawnResult struct {
 	Error        string `json:"error,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
 	GitPath      string `json:"gitPath,omitempty"`
+	OutputPath   string `json:"outputPath,omitempty"`
 	AgentRunID   string `json:"agentRunId,omitempty"`
 }
 
@@ -119,13 +120,15 @@ func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, bran
 		targetPane = paneIndices[0]
 	}
 
-	shell := strings.TrimSpace(os.Getenv("SHELL"))
-	if shell == "" {
-		shell = "/bin/sh"
+	outputPath, err := createDelegatedOutputFile()
+	if err != nil {
+		return result, err
 	}
-	result.Command = BuildManagerAgentCommand(agentCommand, model, prompt) + "; exec " + shellQuote(shell) + " -l"
+	result.OutputPath = outputPath
+	result.Command = "(" + BuildManagerAgentCommand(agentCommand, model, prompt) + "); tsp_status=$?; tmux capture-pane -t \"$TMUX_PANE\" -p -e -S - > " + shellQuote(outputPath) + "; exit $tsp_status"
 	paneIndex, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
 	if err != nil {
+		_ = os.Remove(outputPath)
 		return result, fmt.Errorf("delegated pane creation failed: %w", err)
 	}
 	result.PaneIndex = paneIndex
@@ -201,6 +204,14 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 				result.Error = fmt.Sprintf("worktree creation failed: %v", err)
 				results = append(results, result)
 				continue
+			}
+		}
+
+		if !noInstall {
+			spawnCopyNodeModules(repoRoot, worktreePath)
+			pm := spawnDetectPM(repoRoot)
+			if pm != "" {
+				spawnRunPM(pm, worktreePath, repoRoot)
 			}
 		}
 
@@ -285,6 +296,53 @@ func BuildManagerAgentCommand(command, model, prompt string) string {
 		command += " --model " + shellQuote(strings.TrimSpace(model))
 	}
 	return command + " " + shellQuote(prompt)
+}
+
+func createDelegatedOutputFile() (string, error) {
+	dir := delegatedOutputDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create delegated output directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return "", fmt.Errorf("protect delegated output directory: %w", err)
+	}
+	file, err := os.CreateTemp(dir, "delegate-*.log")
+	if err != nil {
+		return "", fmt.Errorf("create delegated output file: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close delegated output file: %w", err)
+	}
+	return path, nil
+}
+
+func delegatedOutputDir() string {
+	return filepath.Join(config.TspDir(), "delegate-output")
+}
+
+func delegatedOutputTarget(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	base, err := filepath.Abs(delegatedOutputDir())
+	if err != nil {
+		return "", fmt.Errorf("resolve delegated output directory: %w", err)
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve delegated output path: %w", err)
+	}
+	relative, err := filepath.Rel(base, target)
+	if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("refusing to remove delegated output outside %s", base)
+	}
+	name := filepath.Base(target)
+	if !strings.HasPrefix(name, "delegate-") || filepath.Ext(name) != ".log" {
+		return "", fmt.Errorf("refusing to remove unrecognized delegated output %s", target)
+	}
+	return target, nil
 }
 
 func spawnRunSetup(command, dir string) error {
@@ -378,4 +436,33 @@ func spawnCopyNodeModules(repoRoot, worktreePath string) error {
 		}
 		return os.Link(path, dst)
 	})
+}
+
+func spawnRunPM(pm, path, repoRoot string) {
+	if pm == "yarn" {
+		yarnDir := filepath.Join(path, ".yarn")
+		os.MkdirAll(yarnDir, 0755)
+		for _, name := range []string{"cache", "install-state.gz", "unplugged"} {
+			src := filepath.Join(repoRoot, ".yarn", name)
+			dst := filepath.Join(yarnDir, name)
+			if _, err := os.Stat(src); err == nil {
+				if _, err := os.Stat(dst); err != nil {
+					exec.Command("cp", "-a", src, dst).Run()
+				}
+			}
+		}
+	}
+	var cmd *exec.Cmd
+	switch pm {
+	case "yarn":
+		cmd = exec.Command("yarn", "install")
+	case "pnpm":
+		cmd = exec.Command("pnpm", "install")
+	case "bun":
+		cmd = exec.Command("bun", "install")
+	default:
+		cmd = exec.Command("npm", "install")
+	}
+	cmd.Dir = path
+	cmd.Run()
 }

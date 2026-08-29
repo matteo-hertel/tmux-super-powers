@@ -34,6 +34,9 @@ internal/tmux/tmux.go        Tmux command boundary
 internal/pathutil/           Path expansion and directory helpers
 ```
 
+Use `.interface-design/system.md` as the source of truth for dashboard layout,
+tokens, hierarchy, reusable controls, and keyboard interaction patterns.
+
 The dashboard does not own a timer. It lists every live tmux session, discovers
 agent processes, and captures output once at startup and once per explicit
 refresh/action.
@@ -68,6 +71,7 @@ None. `tsp` exposes no network server or remote-control API.
 |---|---|
 | `~/.tsp/config.yaml` | User configuration. |
 | `~/.tsp/agent-runs.json` | Durable metadata for agents created or observed by the dashboard. |
+| `~/.tsp/delegate-output/` | Final bounded scrollback from completed delegated panes. |
 | `spawn.worktree_base` | Parent directory for generated agent worktrees. |
 | `spawn.agent_command` | Primary agent used in the left 80% of new sessions. |
 | `spawn.claude_command` / `spawn.codex_command` | Provider choices in dashboard New. |
@@ -103,11 +107,10 @@ Do not start a local server; the project has no server runtime.
   branch, and session.
 - Manager tasks with clear stop/cleanup intent route to native confirmed TSP
   actions. Do not let a delegated model delete its own workspace.
-- A delegated command ends by replacing itself with a login shell. Do not use
-  `remain-on-exit`; completed delegate panes must stay live and interactive.
-- Pane snapshots include full tmux scrollback with `capture-pane -S -`. Keep
-  command output attached to the pane by passing `$SHELL -c` as explicit tmux
-  command arguments.
+- A delegated command captures its bounded tmux scrollback before exiting, then
+  its temporary pane closes. Keep the stored output until the run is cleaned.
+- Pane snapshots use `capture-pane -S -`. Keep command output attached to the
+  pane by passing `$SHELL -c` as explicit tmux command arguments.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a
