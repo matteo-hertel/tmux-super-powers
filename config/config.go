@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-const defaultManagerAgentCommand = "claude -p --model haiku --permission-mode auto"
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+)
+
+var managerModelFlag = regexp.MustCompile(`(^|[[:space:]])--model(=|[[:space:]]+)([^[:space:]]+)`)
 
 type Config struct {
 	Directories       []string      `yaml:"directories"`
@@ -21,16 +27,30 @@ type Config struct {
 }
 
 type SpawnConfig struct {
-	WorktreeBase string `yaml:"worktree_base"`
-	AgentCommand string `yaml:"agent_command"`
-	DefaultSetup string `yaml:"default_setup"`
+	WorktreeBase  string `yaml:"worktree_base"`
+	AgentCommand  string `yaml:"agent_command"`
+	ClaudeCommand string `yaml:"claude_command"`
+	CodexCommand  string `yaml:"codex_command"`
+	DefaultSetup  string `yaml:"default_setup"`
 }
 
-// ManagerConfig controls short-lived agents delegated from tsp dash. The
-// default is deliberately cheaper than the primary spawn agent and exits when
-// the delegated task is complete.
 type ManagerConfig struct {
-	AgentCommand string `yaml:"agent_command"`
+	DefaultAgent       string             `yaml:"default_agent"`
+	Claude             ManagerAgentConfig `yaml:"claude"`
+	Codex              ManagerAgentConfig `yaml:"codex"`
+	LegacyAgentCommand string             `yaml:"agent_command,omitempty"`
+}
+
+type ManagerAgentConfig struct {
+	Command string `yaml:"command"`
+	Model   string `yaml:"model"`
+}
+
+func (m ManagerConfig) Agent(agent string) ManagerAgentConfig {
+	if agent == AgentCodex {
+		return m.Codex
+	}
+	return m.Claude
 }
 
 type Projects struct {
@@ -134,11 +154,17 @@ func LoadFrom(configPath string) (*Config, error) {
 	if cfg.Spawn.AgentCommand == "" {
 		cfg.Spawn.AgentCommand = "claude --dangerously-skip-permissions"
 	}
+	if cfg.Spawn.ClaudeCommand == "" {
+		cfg.Spawn.ClaudeCommand = "claude --dangerously-skip-permissions"
+	}
+	if cfg.Spawn.CodexCommand == "" {
+		cfg.Spawn.CodexCommand = "codex --full-auto"
+	}
 	if cfg.Spawn.WorktreeBase == "" {
 		cfg.Spawn.WorktreeBase = filepath.Join(homeDir, "work", "code")
 	}
-	if cfg.Manager.AgentCommand == "" {
-		cfg.Manager.AgentCommand = defaultManagerAgentCommand
+	if err := normalizeManagerConfig(&cfg.Manager); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil
@@ -175,12 +201,12 @@ func defaultConfig() *Config {
 		},
 		Editor: os.Getenv("EDITOR"),
 		Spawn: SpawnConfig{
-			WorktreeBase: filepath.Join(homeDir, "work", "code"),
-			AgentCommand: "claude --dangerously-skip-permissions",
+			WorktreeBase:  filepath.Join(homeDir, "work", "code"),
+			AgentCommand:  "claude --dangerously-skip-permissions",
+			ClaudeCommand: "claude --dangerously-skip-permissions",
+			CodexCommand:  "codex --full-auto",
 		},
-		Manager: ManagerConfig{
-			AgentCommand: defaultManagerAgentCommand,
-		},
+		Manager: defaultManagerConfig(),
 	}
 }
 
@@ -217,11 +243,108 @@ func Repair(cfg *Config) ([]string, *Config) {
 		cfg.Spawn.WorktreeBase = defaults.Spawn.WorktreeBase
 		changes = append(changes, "spawn.worktree_base: set to default")
 	}
-	if cfg.Manager.AgentCommand == "" {
-		cfg.Manager.AgentCommand = defaults.Manager.AgentCommand
-		changes = append(changes, "manager.agent_command: set to default")
+	if cfg.Spawn.ClaudeCommand == "" {
+		cfg.Spawn.ClaudeCommand = defaults.Spawn.ClaudeCommand
+		changes = append(changes, "spawn.claude_command: set to default")
+	}
+	if cfg.Spawn.CodexCommand == "" {
+		cfg.Spawn.CodexCommand = defaults.Spawn.CodexCommand
+		changes = append(changes, "spawn.codex_command: set to default")
+	}
+	if cfg.Manager.DefaultAgent == "" {
+		cfg.Manager.DefaultAgent = defaults.Manager.DefaultAgent
+		changes = append(changes, "manager.default_agent: set to default")
+	}
+	if cfg.Manager.Claude.Command == "" {
+		cfg.Manager.Claude.Command = defaults.Manager.Claude.Command
+		changes = append(changes, "manager.claude.command: set to default")
+	}
+	if cfg.Manager.Claude.Model == "" {
+		cfg.Manager.Claude.Model = defaults.Manager.Claude.Model
+		changes = append(changes, "manager.claude.model: set to default")
+	}
+	if cfg.Manager.Codex.Command == "" {
+		cfg.Manager.Codex.Command = defaults.Manager.Codex.Command
+		changes = append(changes, "manager.codex.command: set to default")
+	}
+	if cfg.Manager.Codex.Model == "" {
+		cfg.Manager.Codex.Model = defaults.Manager.Codex.Model
+		changes = append(changes, "manager.codex.model: set to default")
 	}
 	return changes, cfg
+}
+
+func defaultManagerConfig() ManagerConfig {
+	return ManagerConfig{
+		DefaultAgent: AgentClaude,
+		Claude: ManagerAgentConfig{
+			Command: "claude -p --permission-mode auto",
+			Model:   "haiku",
+		},
+		Codex: ManagerAgentConfig{
+			Command: "codex exec --ephemeral --sandbox workspace-write",
+			Model:   "gpt-5.6-luna",
+		},
+	}
+}
+
+func normalizeManagerConfig(manager *ManagerConfig) error {
+	defaults := defaultManagerConfig()
+	if strings.TrimSpace(manager.LegacyAgentCommand) != "" {
+		agent := managerAgentFromCommand(manager.LegacyAgentCommand)
+		command, model := splitManagerModel(manager.LegacyAgentCommand)
+		selected := &manager.Claude
+		if agent == AgentCodex {
+			selected = &manager.Codex
+		}
+		if selected.Command == "" {
+			selected.Command = command
+		}
+		if selected.Model == "" {
+			selected.Model = model
+		}
+		if manager.DefaultAgent == "" {
+			manager.DefaultAgent = agent
+		}
+		manager.LegacyAgentCommand = ""
+	}
+	if manager.DefaultAgent == "" {
+		manager.DefaultAgent = defaults.DefaultAgent
+	}
+	if manager.DefaultAgent != AgentClaude && manager.DefaultAgent != AgentCodex {
+		return fmt.Errorf("manager.default_agent must be %q or %q", AgentClaude, AgentCodex)
+	}
+	if manager.Claude.Command == "" {
+		manager.Claude.Command = defaults.Claude.Command
+	}
+	if manager.Claude.Model == "" {
+		manager.Claude.Model = defaults.Claude.Model
+	}
+	if manager.Codex.Command == "" {
+		manager.Codex.Command = defaults.Codex.Command
+	}
+	if manager.Codex.Model == "" {
+		manager.Codex.Model = defaults.Codex.Model
+	}
+	return nil
+}
+
+func managerAgentFromCommand(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) > 0 && strings.Contains(filepath.Base(strings.Trim(fields[0], `'"`)), "codex") {
+		return AgentCodex
+	}
+	return AgentClaude
+}
+
+func splitManagerModel(command string) (string, string) {
+	match := managerModelFlag.FindStringSubmatchIndex(command)
+	if match == nil {
+		return strings.TrimSpace(command), ""
+	}
+	model := strings.Trim(command[match[6]:match[7]], `'"`)
+	command = strings.TrimSpace(command[:match[0]] + " " + command[match[1]:])
+	return strings.Join(strings.Fields(command), " "), model
 }
 
 // oldConfigPath returns the legacy config file path (~/.tmux-super-powers.yaml).

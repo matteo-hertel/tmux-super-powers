@@ -23,6 +23,7 @@ var projectCmd = &cobra.Command{
 			Placeholder:   "Enter project name",
 			BasePath:      cfg.Projects.Path,
 			SessionPrefix: "project",
+			AgentCommand:  cfg.Spawn.AgentCommand,
 		})
 	},
 }

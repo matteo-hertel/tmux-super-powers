@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -334,7 +335,11 @@ type agentDashboardModel struct {
 	mode          agentDashboardMode
 	taskInput     textinput.Model
 	pathInput     textinput.Model
+	modelInput    textinput.Model
+	baseInput     textinput.Model
 	focusedInput  int
+	managerAgent  string
+	spawnAgent    string
 	busy          bool
 	statusMessage string
 	attachSession string
@@ -363,14 +368,31 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 	pathInput.Placeholder = "/path/to/project"
 	pathInput.CharLimit = 1000
 	pathInput.Width = 72
+	modelInput := textinput.New()
+	modelInput.Placeholder = "Model name"
+	modelInput.CharLimit = 200
+	modelInput.Width = 36
+	baseInput := textinput.New()
+	baseInput.Placeholder = "Current branch"
+	baseInput.CharLimit = 200
+	baseInput.Width = 36
+
+	managerAgent := config.AgentClaude
+	if cfg != nil && cfg.Manager.DefaultAgent != "" {
+		managerAgent = cfg.Manager.DefaultAgent
+		modelInput.SetValue(cfg.Manager.Agent(managerAgent).Model)
+	}
 
 	return agentDashboardModel{
-		agents:    agents,
-		cfg:       cfg,
-		registry:  registry,
-		cwd:       cwd,
-		taskInput: taskInput,
-		pathInput: pathInput,
+		agents:       agents,
+		cfg:          cfg,
+		registry:     registry,
+		cwd:          cwd,
+		taskInput:    taskInput,
+		pathInput:    pathInput,
+		modelInput:   modelInput,
+		baseInput:    baseInput,
+		managerAgent: managerAgent,
 	}
 }
 
@@ -464,10 +486,7 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMessage = "Selected entry has no workspace to delegate into"
 			break
 		}
-		m.mode = dashAgentsDelegate
-		m.taskInput.SetValue("")
-		m.taskInput.Placeholder = "What should the manager do next?"
-		m.taskInput.Focus()
+		m.openDelegate()
 	case "s":
 		if selected, ok := m.selected(); ok && selected.sessionOnly {
 			m.statusMessage = "This session has no running agent to stop"
@@ -498,9 +517,18 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeModal()
 			return m, nil
 		case "tab", "shift+tab":
-			m.focusedInput = 1 - m.focusedInput
+			if msg.String() == "shift+tab" {
+				m.focusedInput = (m.focusedInput + 3) % 4
+			} else {
+				m.focusedInput = (m.focusedInput + 1) % 4
+			}
 			m.syncInputFocus()
 			return m, nil
+		case "left", "right", " ":
+			if m.focusedInput == 2 {
+				m.toggleSpawnAgent()
+				return m, nil
+			}
 		case "enter":
 			task := strings.TrimSpace(m.taskInput.Value())
 			path := strings.TrimSpace(m.pathInput.Value())
@@ -510,7 +538,15 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.busy = true
 			m.statusMessage = "Creating worktree and starting agent…"
-			return m, spawnManagedAgentCmd(m.cfg, m.registry, path, task)
+			return m, spawnManagedAgentCmd(
+				m.cfg,
+				m.registry,
+				path,
+				task,
+				strings.TrimSpace(m.baseInput.Value()),
+				m.spawnAgent,
+				m.spawnAgentCommand(),
+			)
 		}
 		return m.updateFocusedInput(msg)
 
@@ -519,6 +555,19 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.closeModal()
 			return m, nil
+		case "tab":
+			m.focusedInput = (m.focusedInput + 1) % 3
+			m.syncDelegateFocus()
+			return m, nil
+		case "shift+tab":
+			m.focusedInput = (m.focusedInput + 2) % 3
+			m.syncDelegateFocus()
+			return m, nil
+		case "left", "right", " ":
+			if m.focusedInput == 1 {
+				m.toggleManagerAgent()
+				return m, nil
+			}
 		case "enter":
 			task := strings.TrimSpace(m.taskInput.Value())
 			selected, ok := m.selected()
@@ -544,10 +593,14 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.busy = true
 			m.statusMessage = "Starting delegated agent…"
-			return m, delegateAgentCmd(m.cfg, m.registry, selected, task)
+			return m, delegateAgentCmd(m.cfg, m.registry, selected, task, m.managerAgent, strings.TrimSpace(m.modelInput.Value()))
 		}
 		var cmd tea.Cmd
-		m.taskInput, cmd = m.taskInput.Update(msg)
+		if m.focusedInput == 0 {
+			m.taskInput, cmd = m.taskInput.Update(msg)
+		} else if m.focusedInput == 2 {
+			m.modelInput, cmd = m.modelInput.Update(msg)
+		}
 		return m, cmd
 
 	case dashAgentsConfirmStop:
@@ -611,10 +664,13 @@ func classifyManagerTask(task string) managerTaskIntent {
 
 func (m agentDashboardModel) updateFocusedInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	if m.focusedInput == 0 {
+	switch m.focusedInput {
+	case 0:
 		m.taskInput, cmd = m.taskInput.Update(msg)
-	} else {
+	case 1:
 		m.pathInput, cmd = m.pathInput.Update(msg)
+	case 3:
+		m.baseInput, cmd = m.baseInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -629,23 +685,103 @@ func (m *agentDashboardModel) openSpawn() {
 		path = firstNonEmpty(selected.gitPath, selected.run.CWD, path)
 	}
 	m.pathInput.SetValue(path)
+	m.spawnAgent = config.AgentClaude
+	if m.cfg != nil && providerFromCommand(m.cfg.Spawn.AgentCommand) == config.AgentCodex {
+		m.spawnAgent = config.AgentCodex
+	}
+	m.baseInput.SetValue(currentBranchAt(path))
 	m.syncInputFocus()
 }
 
+func (m *agentDashboardModel) openDelegate() {
+	m.mode = dashAgentsDelegate
+	m.focusedInput = 0
+	m.taskInput.SetValue("")
+	m.taskInput.Placeholder = "What should the manager do next?"
+	m.managerAgent = config.AgentClaude
+	if m.cfg != nil && m.cfg.Manager.DefaultAgent != "" {
+		m.managerAgent = m.cfg.Manager.DefaultAgent
+	}
+	m.modelInput.SetValue(m.managerAgentConfig().Model)
+	m.syncDelegateFocus()
+}
+
 func (m *agentDashboardModel) syncInputFocus() {
+	m.taskInput.Blur()
+	m.pathInput.Blur()
+	m.baseInput.Blur()
 	if m.focusedInput == 0 {
 		m.taskInput.Focus()
-		m.pathInput.Blur()
 		return
 	}
+	if m.focusedInput == 1 {
+		m.pathInput.Focus()
+	} else if m.focusedInput == 3 {
+		m.baseInput.Focus()
+	}
+}
+
+func (m *agentDashboardModel) toggleSpawnAgent() {
+	if m.spawnAgent == config.AgentCodex {
+		m.spawnAgent = config.AgentClaude
+	} else {
+		m.spawnAgent = config.AgentCodex
+	}
+}
+
+func (m agentDashboardModel) spawnAgentCommand() string {
+	if m.cfg == nil {
+		return ""
+	}
+	if providerFromCommand(m.cfg.Spawn.AgentCommand) == m.spawnAgent {
+		return m.cfg.Spawn.AgentCommand
+	}
+	if m.spawnAgent == config.AgentCodex {
+		return m.cfg.Spawn.CodexCommand
+	}
+	return m.cfg.Spawn.ClaudeCommand
+}
+
+func currentBranchAt(path string) string {
+	out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (m *agentDashboardModel) syncDelegateFocus() {
 	m.taskInput.Blur()
-	m.pathInput.Focus()
+	m.modelInput.Blur()
+	if m.focusedInput == 0 {
+		m.taskInput.Focus()
+	} else if m.focusedInput == 2 {
+		m.modelInput.Focus()
+	}
+}
+
+func (m *agentDashboardModel) toggleManagerAgent() {
+	if m.managerAgent == config.AgentCodex {
+		m.managerAgent = config.AgentClaude
+	} else {
+		m.managerAgent = config.AgentCodex
+	}
+	m.modelInput.SetValue(m.managerAgentConfig().Model)
+}
+
+func (m agentDashboardModel) managerAgentConfig() config.ManagerAgentConfig {
+	if m.cfg == nil {
+		return config.ManagerAgentConfig{}
+	}
+	return m.cfg.Manager.Agent(m.managerAgent)
 }
 
 func (m *agentDashboardModel) closeModal() {
 	m.mode = dashAgentsBrowse
 	m.taskInput.Blur()
 	m.pathInput.Blur()
+	m.modelInput.Blur()
+	m.baseInput.Blur()
 	m.statusMessage = ""
 }
 
@@ -677,18 +813,23 @@ func refreshAgentsCmd(registry *service.AgentRunRegistry) tea.Cmd {
 	}
 }
 
-func spawnManagedAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, path, task string) tea.Cmd {
+func spawnManagedAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, path, task, baseBranch, spawnAgent, agentCommand string) tea.Cmd {
 	return func() tea.Msg {
-		results, err := service.SpawnAgents([]string{task}, "", false, cfg, path)
+		if cfg == nil {
+			return agentActionDoneMsg{message: "Spawn failed", err: fmt.Errorf("configuration is unavailable")}
+		}
+		spawnConfig := *cfg
+		spawnConfig.Spawn = cfg.Spawn
+		spawnConfig.Spawn.AgentCommand = agentCommand
+		results, err := service.SpawnAgents([]string{task}, baseBranch, false, &spawnConfig, path)
 		selectedID := ""
 		if err == nil {
-			provider := providerFromCommand(cfg.Spawn.AgentCommand)
 			for _, result := range results {
 				if result.Status != "ok" {
 					err = fmt.Errorf("%s", result.Error)
 					break
 				}
-				registered, registerErr := registry.RegisterManaged(result, provider, result.PaneIndex, time.Now().UTC())
+				registered, registerErr := registry.RegisterManaged(result, spawnAgent, result.PaneIndex, time.Now().UTC())
 				if registerErr != nil {
 					err = registerErr
 					break
@@ -716,13 +857,14 @@ func providerFromCommand(command string) string {
 	return provider
 }
 
-func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, parent agentEntry, task string) tea.Cmd {
+func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, parent agentEntry, task, managerAgent, model string) tea.Cmd {
 	return func() tea.Msg {
 		if cfg == nil {
 			return agentActionDoneMsg{message: "Delegation failed", err: fmt.Errorf("configuration is unavailable")}
 		}
 		workspace := parent.workspacePath()
 		prompt := buildDelegationPrompt(parent, task)
+		agentConfig := cfg.Manager.Agent(managerAgent)
 		result, err := service.SpawnDelegatedAgent(
 			task,
 			prompt,
@@ -731,12 +873,12 @@ func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, pa
 			parent.run.PaneIndex,
 			parent.branch,
 			parent.gitPath,
-			cfg.Manager.AgentCommand,
+			agentConfig.Command,
+			model,
 		)
 		selectedID := ""
 		if err == nil {
-			provider := providerFromCommand(cfg.Manager.AgentCommand)
-			registered, registerErr := registry.RegisterDelegated(result, provider, parent.run.ID, result.PaneIndex, time.Now().UTC())
+			registered, registerErr := registry.RegisterDelegated(result, managerAgent, parent.run.ID, result.PaneIndex, time.Now().UTC())
 			if registerErr != nil {
 				_ = tmuxpkg.KillPane(result.Session, result.PaneIndex)
 				err = registerErr
@@ -1124,8 +1266,14 @@ func nonEmptyTail(text string, limit int) []string {
 
 func (m agentDashboardModel) renderSpawn() string {
 	command := "agent"
-	if m.cfg != nil && m.cfg.Spawn.AgentCommand != "" {
-		command = m.cfg.Spawn.AgentCommand
+	if m.spawnAgentCommand() != "" {
+		command = m.spawnAgentCommand()
+	}
+	agentSelector := "‹ " + strings.ToUpper(m.spawnAgent) + " ›"
+	if m.focusedInput == 2 {
+		agentSelector = dashKeyStyle.Render(agentSelector)
+	} else {
+		agentSelector = dashTitleStyle.Render(agentSelector)
 	}
 	lines := []string{
 		dashTitleStyle.Render("Spawn an agent"),
@@ -1137,18 +1285,31 @@ func (m agentDashboardModel) renderSpawn() string {
 		lipgloss.NewStyle().Foreground(dashFaint).Render("PROJECT PATH"),
 		m.pathInput.View(),
 		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("AGENT"),
+		agentSelector,
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("BASE BRANCH"),
+		m.baseInput.View(),
+		"",
 		dashMetaStyle.Render("command  ") + command,
 		"",
-		dashKeyStyle.Render("tab") + " switch field   " + dashKeyStyle.Render("enter") + " spawn   " + dashKeyStyle.Render("esc") + " cancel",
+		dashKeyStyle.Render("tab") + " switch field   " + dashKeyStyle.Render("← / →") + " agent   " + dashKeyStyle.Render("enter") + " spawn   " + dashKeyStyle.Render("esc") + " cancel",
 	}
 	return m.renderModalFrame(lines)
 }
 
 func (m agentDashboardModel) renderDelegate() string {
 	agent, _ := m.selected()
+	agentConfig := m.managerAgentConfig()
 	command := "agent"
-	if m.cfg != nil && m.cfg.Manager.AgentCommand != "" {
-		command = m.cfg.Manager.AgentCommand
+	if agentConfig.Command != "" {
+		command = service.BuildManagerAgentCommand(agentConfig.Command, strings.TrimSpace(m.modelInput.Value()), "<delegation prompt>")
+	}
+	agentSelector := "‹ " + strings.ToUpper(m.managerAgent) + " ›"
+	if m.focusedInput == 1 {
+		agentSelector = dashKeyStyle.Render(agentSelector)
+	} else {
+		agentSelector = dashTitleStyle.Render(agentSelector)
 	}
 	lines := []string{
 		dashTitleStyle.Render("Give the manager a task"),
@@ -1157,13 +1318,19 @@ func (m agentDashboardModel) renderDelegate() string {
 		lipgloss.NewStyle().Foreground(dashFaint).Render("TASK"),
 		m.taskInput.View(),
 		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("AGENT"),
+		agentSelector,
+		"",
+		lipgloss.NewStyle().Foreground(dashFaint).Render("MODEL"),
+		m.modelInput.View(),
+		"",
 		dashMetaStyle.Render("workspace  ") + agent.workspacePath(),
 		dashMetaStyle.Render("parent     ") + agent.title(),
 		dashMetaStyle.Render("command    ") + command,
 		"",
 		dashMetaStyle.Render("Parent and child share this workspace. No terminal keystrokes are injected."),
 		"",
-		dashKeyStyle.Render("enter") + " continue   " + dashKeyStyle.Render("esc") + " cancel",
+		dashKeyStyle.Render("tab") + " switch field   " + dashKeyStyle.Render("← / →") + " agent   " + dashKeyStyle.Render("enter") + " delegate   " + dashKeyStyle.Render("esc") + " cancel",
 	}
 	return m.renderModalFrame(lines)
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/matteo-hertel/tmux-super-powers/config"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -15,9 +16,14 @@ var wtxHereCmd = &cobra.Command{
 	Long: `Create a tmux session in the current directory with the naming convention: ${repo_name}-${branch}
 
 The session will have two panes:
-- Left pane: neovim
-- Right pane: claude`,
+- Left 80%: configured agent
+- Right 20%: shell`,
 	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			return
+		}
 		if !isGitRepo() {
 			fmt.Fprintf(os.Stderr, "Error: Not in a git repository\n")
 			os.Exit(1)
@@ -41,7 +47,10 @@ The session will have two panes:
 
 		fmt.Printf("Creating tmux session '%s' in current directory...\n", sessionName)
 
-		createGitWorktreeSession(sessionName, currentDir)
+		if err := createGitWorktreeSession(sessionName, currentDir, cfg.Spawn.AgentCommand); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+			return
+		}
 
 		fmt.Printf("Tmux session '%s' created successfully.\n", sessionName)
 		fmt.Printf("Attach with: tmux attach-session -t '%s'\n", sessionName)

@@ -17,6 +17,7 @@ type projectCreatorConfig struct {
 	Placeholder   string
 	BasePath      string
 	SessionPrefix string
+	AgentCommand  string
 }
 
 type creatorModel struct {
@@ -95,8 +96,7 @@ func runProjectCreator(cfg projectCreatorConfig) {
 	sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", cfg.SessionPrefix, fm.projectName))
 
 	if !tmuxpkg.SessionExists(sessionName) {
-		fmt.Print(sessionLaunchSummary(sessionName, "nvim", ""))
-		if err := tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, "nvim", ""); err != nil {
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, cfg.AgentCommand, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
 			return
 		}
@@ -107,19 +107,4 @@ func runProjectCreator(cfg projectCreatorConfig) {
 	if err := tmuxpkg.AttachOrSwitch(sessionName); err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
 	}
-}
-
-func sessionLaunchSummary(sessionName, leftCommand, rightCommand string) string {
-	if strings.TrimSpace(leftCommand) == "" {
-		leftCommand = "$SHELL"
-	}
-	if strings.TrimSpace(rightCommand) == "" {
-		rightCommand = "$SHELL"
-	}
-	return fmt.Sprintf(
-		"Starting tmux session %s\n  pane 0: %s\n  pane 1: %s\n",
-		sessionName,
-		leftCommand,
-		rightCommand,
-	)
 }

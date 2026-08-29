@@ -77,7 +77,7 @@ var dirCmd = &cobra.Command{
 		}
 
 		if fm, ok := finalModel.(dirModel); ok {
-			openSelectedDirs(fm)
+			openSelectedDirs(fm, cfg.Spawn.AgentCommand)
 		}
 	},
 }
@@ -408,7 +408,7 @@ func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, ignoreS
 	return nil
 }
 
-func openSelectedDirs(fm dirModel) {
+func openSelectedDirs(fm dirModel, agentCommand string) {
 	if !fm.confirmed || len(fm.selectedPaths) == 0 {
 		return
 	}
@@ -423,7 +423,7 @@ func openSelectedDirs(fm dirModel) {
 	for _, path := range paths {
 		sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
 		if !tmuxpkg.SessionExists(sessionName) {
-			if err := createSession(sessionName, path); err != nil {
+			if err := createSession(sessionName, path, agentCommand); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating tmux session %s: %v\n", sessionName, err)
 				continue
 			}
@@ -442,7 +442,6 @@ func openSelectedDirs(fm dirModel) {
 	}
 }
 
-func createSession(sessionName, dir string) error {
-	fmt.Print(sessionLaunchSummary(sessionName, "nvim", ""))
-	return tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", "")
+func createSession(sessionName, dir, agentCommand string) error {
+	return tmuxpkg.CreateTwoPaneSession(sessionName, dir, agentCommand, "")
 }

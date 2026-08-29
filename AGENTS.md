@@ -69,7 +69,10 @@ None. `tsp` exposes no network server or remote-control API.
 | `~/.tsp/config.yaml` | User configuration. |
 | `~/.tsp/agent-runs.json` | Durable metadata for agents created or observed by the dashboard. |
 | `spawn.worktree_base` | Parent directory for generated agent worktrees. |
-| `manager.agent_command` | Inexpensive non-interactive agent used for delegated jobs. |
+| `spawn.agent_command` | Primary agent used in the left 80% of new sessions. |
+| `spawn.claude_command` / `spawn.codex_command` | Provider choices in dashboard New. |
+| `manager.default_agent` | Default Claude or Codex provider for delegated jobs. |
+| `manager.claude` / `manager.codex` | Command and default model for each delegated provider. |
 
 Unknown legacy YAML keys are ignored, so old configurations containing
 `dash`, `serve`, `watcher`, or `sandbox` sections still load.
@@ -89,6 +92,8 @@ Do not start a local server; the project has no server runtime.
 ## Gotchas
 
 - `tsp dash` must run inside tmux because `Enter` switches the active client.
+- Every session launcher uses the `twosplit` shape: the configured primary
+  agent in pane 0 at 80%, and an empty shell in pane 1 at 20%.
 - `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI
   arguments. Keep quoting in `internal/service/spawn.go`; do not restore
   follow-up prompt injection with `tmux send-keys`.
@@ -98,10 +103,11 @@ Do not start a local server; the project has no server runtime.
   branch, and session.
 - Manager tasks with clear stop/cleanup intent route to native confirmed TSP
   actions. Do not let a delegated model delete its own workspace.
-- One-shot delegated agent panes use tmux `remain-on-exit`; discovery must skip
-  dead panes as live processes while preserving their captured final output.
-- `tsp dir`, `tsp project`, and `tsp spawn` report the pane or agent commands
-  they launch. Keep those messages accurate when launch behavior changes.
+- A delegated command ends by replacing itself with a login shell. Do not use
+  `remain-on-exit`; completed delegate panes must stay live and interactive.
+- Pane snapshots include full tmux scrollback with `capture-pane -S -`. Keep
+  command output attached to the pane by passing `$SHELL -c` as explicit tmux
+  command arguments.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a

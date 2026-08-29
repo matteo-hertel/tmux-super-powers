@@ -79,9 +79,9 @@ Examples:
 			fmt.Printf("Would spawn %d agent(s)\n", len(tasks))
 			fmt.Printf("  project: %s\n", repoDir)
 			fmt.Printf("  base:    %s\n", firstNonEmpty(baseBranch, "current branch"))
+			fmt.Printf("  command: %s\n", cfg.Spawn.AgentCommand)
 			for index, task := range tasks {
 				fmt.Printf("  %d. %s\n", index+1, task)
-				fmt.Printf("     command: %s\n", service.BuildAgentCommand(cfg.Spawn.AgentCommand, task))
 			}
 			fmt.Println("Each agent receives a unique spawn/* branch, worktree, and tmux session.")
 			return
@@ -115,7 +115,6 @@ Examples:
 			}
 			fmt.Printf("✓ %s\n", result.Task)
 			fmt.Printf("  session: %s\n", result.Session)
-			fmt.Printf("  command: %s\n", result.Command)
 			if result.Branch != "" {
 				fmt.Printf("  branch:  %s\n", result.Branch)
 			}

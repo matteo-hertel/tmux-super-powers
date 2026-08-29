@@ -14,11 +14,11 @@ personal invocation frequency.
 | `tsp dir` | Keep | Core fast-path from configured directories into tmux. |
 | `tsp project` | Keep | Single canonical project creator. |
 | `tsp list` (`txl`) | Keep | Fast tmux session picker without the controls and detail view in the dashboard. |
-| `tsp spawn` | Keep and refactor | Core agent launcher; now shares the service path with the dashboard, supports Claude/Codex command overrides, and records managed runs. |
-| `tsp dash` | Keep and replace | Now an on-demand session and agent manager: browse every session, spawn, delegate child panes, attach, interrupt, clean, and refresh. It does not inject follow-up keystrokes into agent terminals. |
+| `tsp spawn` | Keep and refactor | Core agent launcher; now shares the service path with dashboard New, whose form selects Claude/Codex and a base branch, supports command overrides, uses the standard 80/20 agent-and-shell layout, and records managed runs. |
+| `tsp dash` | Keep and replace | Now an on-demand session and agent manager: browse every session, spawn, delegate configurable Claude/Codex child panes, attach, interrupt, clean, and refresh. It does not inject follow-up keystrokes into agent terminals. |
 | `tsp rm` | Keep | Session-oriented cleanup with worktree awareness. |
 | `tsp cleanup` | Keep | Finds orphaned directories/worktrees under the configured worktree base even when no tmux session exists. |
-| `tsp wtx-new` | Keep | Manual multi-worktree creation without assigning agents. |
+| `tsp wtx-new` | Keep | Manual multi-worktree creation with the same configured agent-and-shell session layout as other launch commands. |
 | `tsp wtx-here` | Keep | Quick tmux session for the current repository. |
 | `tsp wtx-rm` | Keep | Worktree-first cleanup independent of the session picker. |
 | `tsp middle` | Keep | Small, isolated tmux popup utility with no overlap in the retained surface. |

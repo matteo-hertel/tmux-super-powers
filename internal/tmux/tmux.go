@@ -48,7 +48,7 @@ func AttachOrSwitch(name string) error {
 func BuildNewSessionArgs(name, dir, command string) []string {
 	args := []string{"new-session", "-d", "-s", name, "-c", dir}
 	if command != "" {
-		args = append(args, command)
+		args = append(args, shellCommandArgs(command)...)
 	}
 	return args
 }
@@ -59,7 +59,7 @@ func BuildSplitPaneArgs(target, dir, command string) []string {
 		"-t", target, "-c", dir,
 	}
 	if command != "" {
-		args = append(args, command)
+		args = append(args, shellCommandArgs(command)...)
 	}
 	return args
 }
@@ -146,7 +146,7 @@ func RunPopup(command string, width, height int, detach bool) error {
 
 // BuildCapturePaneArgs builds tmux capture-pane args.
 func BuildCapturePaneArgs(target string) []string {
-	return []string{"capture-pane", "-t", target, "-p", "-e"}
+	return []string{"capture-pane", "-t", target, "-p", "-e", "-S", "-"}
 }
 
 // CreateTwoPaneSession creates a tmux session with a left and right pane.
@@ -157,10 +157,7 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
-	splitArgs := []string{"split-window", "-h", "-t", name, "-c", dir}
-	if rightCmd != "" {
-		splitArgs = append(splitArgs, rightCmd)
-	}
+	splitArgs := BuildTwoPaneSplitArgs(name, dir, rightCmd)
 	if err := exec.Command("tmux", splitArgs...).Run(); err != nil {
 		return fmt.Errorf("failed to split window: %w", err)
 	}
@@ -169,18 +166,20 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 	return nil
 }
 
-// KeepPaneAfterExit retains a pane and its scrollback after its command exits.
-// This is used for one-shot delegated agents so their final result remains
-// inspectable in the dashboard.
-func KeepPaneAfterExit(target string) error {
-	if err := exec.Command("tmux", BuildKeepPaneAfterExitArgs(target)...).Run(); err != nil {
-		return fmt.Errorf("retain pane after exit: %w", err)
+func BuildTwoPaneSplitArgs(name, dir, rightCmd string) []string {
+	args := []string{"split-window", "-h", "-l", "20%", "-t", name, "-c", dir}
+	if rightCmd != "" {
+		args = append(args, shellCommandArgs(rightCmd)...)
 	}
-	return nil
+	return args
 }
 
-func BuildKeepPaneAfterExitArgs(target string) []string {
-	return []string{"set-option", "-p", "-t", target, "remain-on-exit", "on"}
+func shellCommandArgs(command string) []string {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return []string{shell, "-c", command}
 }
 
 // GetPaneCwd returns the current working directory of a session's first pane.

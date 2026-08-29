@@ -95,7 +95,7 @@ func TestTaskToBranchTruncation(t *testing.T) {
 }
 
 func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
-	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", 1, "", "", "claude -p"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", 1, "", "", "claude -p", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty workspace")
 	}
 
@@ -103,12 +103,20 @@ func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "parent", 1, "", "", "claude -p"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "parent", 1, "", "", "claude -p", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted a file as its workspace")
 	}
 
-	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "parent", 1, "", "", ""); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "parent", 1, "", "", "", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty manager command")
+	}
+}
+
+func TestBuildManagerAgentCommandAddsModelAndQuotesPrompt(t *testing.T) {
+	got := BuildManagerAgentCommand("codex exec --ephemeral", "gpt-5.6-luna", "fix Matt's test")
+	want := "codex exec --ephemeral --model 'gpt-5.6-luna' 'fix Matt'\\''s test'"
+	if got != want {
+		t.Fatalf("BuildManagerAgentCommand() = %q, want %q", got, want)
 	}
 }
 
@@ -132,9 +140,11 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	t.Cleanup(func() {
 		_ = tmuxpkg.KillSession(sessionName)
 	})
+	t.Setenv("SHELL", "/bin/sh")
 
 	result, err := SpawnDelegatedAgent(
-		"check CI", "check CI", t.TempDir(), sessionName, 99, "main", "", "sleep 30 #",
+		"check CI", "check CI", t.TempDir(), sessionName, 99, "main", "",
+		"sh -c 'i=1; while [ $i -le 200 ]; do echo delegate-line-$i; i=$((i + 1)); done' placeholder", "",
 	)
 	if err != nil {
 		t.Fatalf("SpawnDelegatedAgent: %v", err)
@@ -144,5 +154,19 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	}
 	if result.PaneIndex == 0 || !tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
 		t.Fatalf("delegated pane %d does not exist in parent session", result.PaneIndex)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(GetPaneProcess(sessionName, result.PaneIndex), "sh") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if IsPaneDead(sessionName, result.PaneIndex) {
+		t.Fatal("delegated pane is dead after the agent exits")
+	}
+	output := CapturePaneContent(sessionName, result.PaneIndex)
+	if !strings.Contains(output, "delegate-line-1") || !strings.Contains(output, "delegate-line-200") {
+		t.Fatalf("delegated output was truncated: %q", output)
 	}
 }

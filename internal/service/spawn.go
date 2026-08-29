@@ -78,7 +78,7 @@ type SpawnResult struct {
 // SpawnDelegatedAgent starts a short-lived agent in an existing workspace. It
 // deliberately creates no branch or worktree: the caller records the new run
 // as a child of the run that owns the workspace.
-func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, branch, gitPath, agentCommand string) (SpawnResult, error) {
+func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, branch, gitPath, agentCommand, model string) (SpawnResult, error) {
 	dir = pathutil.ExpandPath(strings.TrimSpace(dir))
 	result := SpawnResult{
 		Task:         task,
@@ -119,16 +119,16 @@ func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, bran
 		targetPane = paneIndices[0]
 	}
 
-	result.Command = BuildAgentCommand(agentCommand, prompt)
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	result.Command = BuildManagerAgentCommand(agentCommand, model, prompt) + "; exec " + shellQuote(shell) + " -l"
 	paneIndex, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
 	if err != nil {
 		return result, fmt.Errorf("delegated pane creation failed: %w", err)
 	}
 	result.PaneIndex = paneIndex
-	if err := tmuxpkg.KeepPaneAfterExit(fmt.Sprintf("%s:0.%d", session, paneIndex)); err != nil {
-		_ = tmuxpkg.KillPane(session, paneIndex)
-		return result, err
-	}
 	result.Status = "ok"
 	return result, nil
 }
@@ -180,7 +180,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			Task:         task,
 			Branch:       branch,
 			Session:      sessionName,
-			PaneIndex:    1,
+			PaneIndex:    0,
 			Command:      BuildAgentCommand(agentCmd, task),
 			WorktreePath: worktreePath,
 			GitPath:      repoRoot,
@@ -216,9 +216,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		// Pass the task as a CLI argument to the agent command so it starts
-		// working immediately — avoids all send-keys/Enter issues.
-		if err := tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", result.Command); err != nil {
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, result.Command, ""); err != nil {
 			result.Status = "error"
 			result.Error = fmt.Sprintf("session creation failed: %v", err)
 			results = append(results, result)
@@ -248,7 +246,7 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 		result := SpawnResult{
 			Task:      task,
 			Session:   sessionName,
-			PaneIndex: 1,
+			PaneIndex: 0,
 			Command:   BuildAgentCommand(agentCmd, task),
 			Status:    "ok",
 		}
@@ -266,7 +264,7 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 			}
 		}
 
-		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", result.Command); err != nil {
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, result.Command, ""); err != nil {
 			result.Status = "error"
 			result.Error = fmt.Sprintf("session creation failed: %v", err)
 		}
@@ -279,6 +277,14 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 
 func BuildAgentCommand(command, prompt string) string {
 	return strings.TrimSpace(command) + " " + shellQuote(prompt)
+}
+
+func BuildManagerAgentCommand(command, model, prompt string) string {
+	command = strings.TrimSpace(command)
+	if strings.TrimSpace(model) != "" {
+		command += " --model " + shellQuote(strings.TrimSpace(model))
+	}
+	return command + " " + shellQuote(prompt)
 }
 
 func spawnRunSetup(command, dir string) error {

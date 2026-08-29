@@ -195,7 +195,7 @@ func IsPaneDead(session string, pane int) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
-// CapturePaneContent captures the visible content of a pane.
+// CapturePaneContent captures a pane and its tmux scrollback.
 // Falls back to pane 0 if the requested pane fails.
 func CapturePaneContent(session string, pane int) string {
 	target := fmt.Sprintf("%s:0.%d", session, pane)

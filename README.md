@@ -50,9 +50,11 @@ tsp dash
 
 The manager shows every live tmux session and marks sessions without an agent
 as idle. It takes a snapshot only when it opens or when you press `r`; it does
-not poll pane output or CI. Delegation starts a new inexpensive child pane in
-the selected session and retained workspace instead of injecting keystrokes
-into the old process.
+not poll pane output or CI. Delegation starts a new child pane in the selected
+session and retained workspace instead of injecting keystrokes into the old
+process. The task panel lets you pick Claude or Codex and edit the model for
+that run. When the delegated agent exits, its pane becomes a live shell and its
+full tmux scrollback stays available to the dashboard.
 Natural-language lifecycle requests such as `delete this worktree` resolve to
 the same exact-target confirmation used by the native Clean control; the model
 never owns workspace deletion.
@@ -68,9 +70,12 @@ never owns workspace deletion.
 | `j` / `k` | Move through the roster |
 | `?` | Show help |
 
-`tsp dir` and `tsp project` print the commands assigned to their new tmux panes.
-`tsp spawn` prints the full agent command for each task. `tsp` recognizes Claude
-Code, Codex, and Aider processes. Agents created by
+Dashboard New lets you choose Claude or Codex and set the base branch before
+the worktree is created.
+
+New sessions use the same layout as `twosplit`: the configured primary agent
+runs in the left 80% and an empty shell runs in the right 20%. `tsp` recognizes
+Claude Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
 available for delegation and deliberate cleanup. Delegated children appear
 directly beneath their parent and may run concurrently in the same retained
@@ -85,8 +90,8 @@ tsp wtx-here
 tsp wtx-rm
 ```
 
-These remain useful when you want a worktree and tmux session without
-immediately assigning an agent.
+These remain useful when you want direct worktree control. Their tmux sessions
+use the same configured agent and 80/20 layout as the other launch commands.
 
 ## Configuration
 
@@ -108,14 +113,25 @@ editor: $EDITOR
 spawn:
   worktree_base: ~/work/code
   agent_command: claude --dangerously-skip-permissions
+  claude_command: claude --dangerously-skip-permissions
+  codex_command: codex --full-auto
   default_setup: ""
 
 manager:
-  agent_command: claude -p --model haiku --permission-mode auto
+  default_agent: claude
+  claude:
+    command: claude -p --permission-mode auto
+    model: haiku
+  codex:
+    command: codex exec --ephemeral --sandbox workspace-write
+    model: gpt-5.6-luna
 ```
 
-The manager command is configurable. For Codex, use a non-interactive command
-such as `codex exec --ephemeral --sandbox workspace-write`.
+`spawn.agent_command` is the default primary agent used by `dir`, `project`,
+`spawn`, dashboard New, `wtx-new`, and `wtx-here`. The Claude and Codex spawn
+commands power the provider switch in dashboard New. The `manager` section
+controls delegated agents and their default models. The delegation panel can
+override the manager agent and model for one run.
 
 Use `tsp config repair` to fill missing active settings. Old `dash`, `serve`,
 `watcher`, and `sandbox` keys are safely ignored by the YAML loader.

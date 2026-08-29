@@ -178,6 +178,37 @@ func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
 	}
 }
 
+func TestAgentDashboardChoosesSpawnAgentAndBaseBranch(t *testing.T) {
+	cfg := &config.Config{Spawn: config.SpawnConfig{
+		AgentCommand:  "claude --dangerously-skip-permissions",
+		ClaudeCommand: "claude --dangerously-skip-permissions",
+		CodexCommand:  "codex --full-auto",
+	}}
+	model := newAgentDashboardModel(nil, cfg, nil, t.TempDir())
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	got := next.(agentDashboardModel)
+
+	for range 2 {
+		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+		got = next.(agentDashboardModel)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got = next.(agentDashboardModel)
+	if got.spawnAgent != config.AgentCodex || got.spawnAgentCommand() != "codex --full-auto" {
+		t.Fatalf("spawn selection = %s/%s, want codex/codex --full-auto", got.spawnAgent, got.spawnAgentCommand())
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = next.(agentDashboardModel)
+	if !got.baseInput.Focused() {
+		t.Fatal("base branch input should be focused")
+	}
+	got.baseInput.SetValue("release/next")
+	view := got.renderSpawn()
+	if !strings.Contains(view, "CODEX") || !strings.Contains(view, "release/next") {
+		t.Fatalf("spawn form did not render the selected agent and base branch: %q", view)
+	}
+}
+
 func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
 	model := newAgentDashboardModel([]agentEntry{{
 		run:           service.AgentRun{SessionName: "shared-session", PaneIndex: 3},
@@ -205,6 +236,11 @@ func TestProviderFromCommand(t *testing.T) {
 }
 
 func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
+	cfg := &config.Config{Manager: config.ManagerConfig{
+		DefaultAgent: config.AgentClaude,
+		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
+		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
+	}}
 	model := newAgentDashboardModel([]agentEntry{{
 		run: service.AgentRun{
 			ID:           "run-parent",
@@ -216,7 +252,7 @@ func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
 		},
 		worktreePath:  "/work/feature",
 		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
+	}}, cfg, nil, "/repo")
 
 	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	if cmd != nil {
@@ -228,6 +264,40 @@ func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
 	}
 	if !got.taskInput.Focused() {
 		t.Fatal("delegation task input should be focused")
+	}
+	if got.managerAgent != config.AgentClaude || got.modelInput.Value() != "haiku" {
+		t.Fatalf("manager defaults = %s/%s, want claude/haiku", got.managerAgent, got.modelInput.Value())
+	}
+}
+
+func TestAgentDashboardChoosesManagerAgentAndModel(t *testing.T) {
+	cfg := &config.Config{Manager: config.ManagerConfig{
+		DefaultAgent: config.AgentClaude,
+		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
+		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
+	}}
+	model := newAgentDashboardModel([]agentEntry{{
+		run:           service.AgentRun{SessionName: "feature", CWD: "/repo"},
+		sessionExists: true,
+	}}, cfg, nil, "/repo")
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got := next.(agentDashboardModel)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = next.(agentDashboardModel)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got = next.(agentDashboardModel)
+	if got.managerAgent != config.AgentCodex || got.modelInput.Value() != "gpt-5.6-luna" {
+		t.Fatalf("manager selection = %s/%s, want codex/gpt-5.6-luna", got.managerAgent, got.modelInput.Value())
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = next.(agentDashboardModel)
+	if !got.modelInput.Focused() {
+		t.Fatal("model input should be focused")
+	}
+	view := got.renderDelegate()
+	if !strings.Contains(view, "CODEX") || !strings.Contains(view, "gpt-5.6-luna") {
+		t.Fatalf("delegate form did not render the selected agent and model: %q", view)
 	}
 }
 
