@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -51,12 +52,12 @@ var dirCmd = &cobra.Command{
 
 		delegate := list.NewDefaultDelegate()
 		delegate.ShowDescription = true
-		
+
 		textInput := textinput.New()
 		textInput.Placeholder = "Type to filter directories..."
 		textInput.Focus()
 		textInput.Width = 50
-		
+
 		m := dirModel{
 			list:          list.New(items, delegate, 0, 0),
 			textInput:     textInput,
@@ -76,7 +77,7 @@ var dirCmd = &cobra.Command{
 		}
 
 		if fm, ok := finalModel.(dirModel); ok {
-			openSelectedDirs(fm)
+			openSelectedDirs(fm, cfg.Spawn.AgentCommand)
 		}
 	},
 }
@@ -407,7 +408,7 @@ func walkDirectoryDepthRecursive(dir string, currentDepth, maxDepth int, ignoreS
 	return nil
 }
 
-func openSelectedDirs(fm dirModel) {
+func openSelectedDirs(fm dirModel, agentCommand string) {
 	if !fm.confirmed || len(fm.selectedPaths) == 0 {
 		return
 	}
@@ -416,19 +417,31 @@ func openSelectedDirs(fm dirModel) {
 	for path := range fm.selectedPaths {
 		paths = append(paths, path)
 	}
+	sort.Strings(paths)
 
+	firstSession := ""
 	for _, path := range paths {
 		sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
 		if !tmuxpkg.SessionExists(sessionName) {
-			createSession(sessionName, path)
+			if err := createSession(sessionName, path, agentCommand); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating tmux session %s: %v\n", sessionName, err)
+				continue
+			}
+		} else {
+			fmt.Printf("Using existing tmux session %s\n", sessionName)
+		}
+		if firstSession == "" {
+			firstSession = sessionName
 		}
 	}
 
-	// Switch/attach to the first created session
-	sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(paths[0]))
-	tmuxpkg.AttachOrSwitch(sessionName)
+	if firstSession != "" {
+		if err := tmuxpkg.AttachOrSwitch(firstSession); err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
+		}
+	}
 }
 
-func createSession(sessionName, dir string) {
-	tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", "")
+func createSession(sessionName, dir, agentCommand string) error {
+	return tmuxpkg.CreateTwoPaneSession(sessionName, dir, agentCommand, "")
 }

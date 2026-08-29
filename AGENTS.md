@@ -1,6 +1,6 @@
 # tmux-super-powers agent guide
 
-Keep this file and `AGENTS.md` aligned.
+Keep this file and `CLAUDE.md` aligned.
 
 ## Product
 

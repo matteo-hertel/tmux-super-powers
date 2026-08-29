@@ -66,16 +66,82 @@ type SpawnResult struct {
 	Task         string `json:"task"`
 	Branch       string `json:"branch"`
 	Session      string `json:"session"`
+	PaneIndex    int    `json:"paneIndex"`
+	PaneID       string `json:"paneId,omitempty"`
+	Command      string `json:"command,omitempty"`
 	Status       string `json:"status"`
 	Error        string `json:"error,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
 	GitPath      string `json:"gitPath,omitempty"`
+	OutputPath   string `json:"outputPath,omitempty"`
 	AgentRunID   string `json:"agentRunId,omitempty"`
+}
+
+// SpawnDelegatedAgent starts a short-lived agent in an existing workspace. It
+// deliberately creates no branch or worktree: the caller records the new run
+// as a child of the run that owns the workspace.
+func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane tmuxpkg.Pane, branch, gitPath, agentCommand, model string) (SpawnResult, error) {
+	dir = pathutil.ExpandPath(strings.TrimSpace(dir))
+	result := SpawnResult{
+		Task:         task,
+		Branch:       branch,
+		Session:      session,
+		WorktreePath: dir,
+		GitPath:      gitPath,
+	}
+	if dir == "" {
+		return result, fmt.Errorf("delegation workspace is required")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return result, fmt.Errorf("delegation workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return result, fmt.Errorf("delegation workspace is not a directory: %s", dir)
+	}
+	agentCommand = strings.TrimSpace(agentCommand)
+	if agentCommand == "" {
+		return result, fmt.Errorf("manager agent command is required")
+	}
+	if strings.TrimSpace(session) == "" {
+		return result, fmt.Errorf("parent tmux session is required")
+	}
+	if parentPane.ID == "" && parentPane.Index < 0 {
+		return result, fmt.Errorf("parent tmux pane is required")
+	}
+	if !tmuxpkg.SessionExists(session) {
+		return result, fmt.Errorf("parent tmux session %q does not exist", session)
+	}
+	targetPane := parentPane
+	if !tmuxpkg.PaneExists(session, targetPane) {
+		panes := tmuxpkg.Panes(session)
+		if len(panes) == 0 {
+			return result, fmt.Errorf("parent tmux session %q has no panes", session)
+		}
+		targetPane = panes[0]
+	}
+
+	outputPath, err := createDelegatedOutputFile()
+	if err != nil {
+		return result, err
+	}
+	result.OutputPath = outputPath
+	result.Command = "(" + BuildManagerAgentCommand(agentCommand, model, prompt) + "); tsp_status=$?; tmux capture-pane -t \"$TMUX_PANE\" -p -e -S - > " + shellQuote(outputPath) + "; exit $tsp_status"
+	pane, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
+	if err != nil {
+		_ = os.Remove(outputPath)
+		return result, fmt.Errorf("delegated pane creation failed: %w", err)
+	}
+	result.PaneIndex = pane.Index
+	result.PaneID = pane.ID
+	result.Status = "ok"
+	return result, nil
 }
 
 // SpawnAgents deploys agents with tasks into worktrees (git repos) or
 // directly in the target directory (non-git directories).
-// If repoDir is non-empty, it is used to find the git repo root; otherwise the server's cwd is used.
+// If repoDir is non-empty, it is used to find the git repo root; otherwise the
+// current working directory is used.
 func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.Config, repoDir string) ([]SpawnResult, error) {
 	var repoRoot string
 	var err error
@@ -115,7 +181,15 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branchShort))
 		worktreePath := filepath.Join(worktreeBase, fmt.Sprintf("%s-%s", repoName, branchShort))
 
-		result := SpawnResult{Task: task, Branch: branch, Session: sessionName, WorktreePath: worktreePath, GitPath: repoRoot}
+		result := SpawnResult{
+			Task:         task,
+			Branch:       branch,
+			Session:      sessionName,
+			PaneIndex:    0,
+			Command:      BuildAgentCommand(agentCmd, task),
+			WorktreePath: worktreePath,
+			GitPath:      repoRoot,
+		}
 
 		if !spawnBranchExists(repoRoot, branch) {
 			if err := spawnCreateBranch(repoRoot, branch, baseBranch); err != nil {
@@ -135,31 +209,33 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			}
 		}
 
-		// Pass the task as a CLI argument to the agent command so it starts
-		// working immediately — avoids all send-keys/Enter issues.
-		agentLaunch := agentCmd + " " + shellQuote(task)
-
-		installCmd := ""
 		if !noInstall {
-			if pm := spawnDetectPM(repoRoot); pm != "" {
-				installCmd = pm + " install"
+			spawnCopyNodeModules(repoRoot, worktreePath)
+			pm := spawnDetectPM(repoRoot)
+			if pm != "" {
+				spawnRunPM(pm, worktreePath, repoRoot)
+			}
+		}
+
+		if cfg.Spawn.DefaultSetup != "" {
+			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, worktreePath); err != nil {
+				result.Status = "error"
+				result.Error = fmt.Sprintf("setup failed: %v", err)
+				results = append(results, result)
+				continue
 			}
 		}
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
-		if installCmd != "" {
-			// Three panes: nvim (left), install (top-right), agent (bottom-right).
-			// Install runs non-blocking in its own pane; the agent waits on a tmux
-			// wait-for channel and launches once install finishes.
-			ch := "tsp-install-" + sessionName
-			installPane := installCmd + "; tmux wait-for -S " + ch + "; exec $SHELL"
-			agentPane := "tmux wait-for " + ch + "; " + agentLaunch
-			tmuxpkg.CreateThreePaneSession(sessionName, worktreePath, "nvim", installPane, agentPane)
-		} else {
-			tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, "nvim", agentLaunch)
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, worktreePath, result.Command, ""); err != nil {
+			result.Status = "error"
+			result.Error = fmt.Sprintf("session creation failed: %v", err)
+			results = append(results, result)
+			continue
 		}
+		result.PaneID = paneIDAtIndex(sessionName, result.PaneIndex)
 
 		result.Status = "ok"
 		results = append(results, result)
@@ -181,22 +257,112 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 		slug = strings.TrimPrefix(slug, "spawn/")
 		sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s-%s", dirName, slug, suffix))
 
-		result := SpawnResult{Task: task, Session: sessionName, Status: "ok"}
+		result := SpawnResult{
+			Task:      task,
+			Session:   sessionName,
+			PaneIndex: 0,
+			Command:   BuildAgentCommand(agentCmd, task),
+			Status:    "ok",
+		}
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
 		}
 
-		agentWithTask := agentCmd + " " + shellQuote(task)
-		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", agentWithTask); err != nil {
+		if cfg.Spawn.DefaultSetup != "" {
+			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, dir); err != nil {
+				result.Status = "error"
+				result.Error = fmt.Sprintf("setup failed: %v", err)
+				results = append(results, result)
+				continue
+			}
+		}
+
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, result.Command, ""); err != nil {
 			result.Status = "error"
 			result.Error = fmt.Sprintf("session creation failed: %v", err)
+		} else {
+			result.PaneID = paneIDAtIndex(sessionName, result.PaneIndex)
 		}
 
 		results = append(results, result)
 	}
 
 	return results, nil
+}
+
+func BuildAgentCommand(command, prompt string) string {
+	return strings.TrimSpace(command) + " " + shellQuote(prompt)
+}
+
+func BuildManagerAgentCommand(command, model, prompt string) string {
+	command = strings.TrimSpace(command)
+	if strings.TrimSpace(model) != "" {
+		command += " --model " + shellQuote(strings.TrimSpace(model))
+	}
+	return command + " " + shellQuote(prompt)
+}
+
+func createDelegatedOutputFile() (string, error) {
+	dir := delegatedOutputDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create delegated output directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return "", fmt.Errorf("protect delegated output directory: %w", err)
+	}
+	file, err := os.CreateTemp(dir, "delegate-*.log")
+	if err != nil {
+		return "", fmt.Errorf("create delegated output file: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close delegated output file: %w", err)
+	}
+	return path, nil
+}
+
+func delegatedOutputDir() string {
+	return filepath.Join(config.TspDir(), "delegate-output")
+}
+
+func paneIDAtIndex(session string, index int) string {
+	for _, pane := range tmuxpkg.Panes(session) {
+		if pane.Index == index {
+			return pane.ID
+		}
+	}
+	return ""
+}
+
+func delegatedOutputTarget(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	base, err := filepath.Abs(delegatedOutputDir())
+	if err != nil {
+		return "", fmt.Errorf("resolve delegated output directory: %w", err)
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve delegated output path: %w", err)
+	}
+	relative, err := filepath.Rel(base, target)
+	if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("refusing to remove delegated output outside %s", base)
+	}
+	name := filepath.Base(target)
+	if !strings.HasPrefix(name, "delegate-") || filepath.Ext(name) != ".log" {
+		return "", fmt.Errorf("refusing to remove unrecognized delegated output %s", target)
+	}
+	return target, nil
+}
+
+func spawnRunSetup(command, dir string) error {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = dir
+	return cmd.Run()
 }
 
 func spawnGetRepoRoot() (string, error) {
@@ -286,3 +452,31 @@ func spawnCopyNodeModules(repoRoot, worktreePath string) error {
 	})
 }
 
+func spawnRunPM(pm, path, repoRoot string) {
+	if pm == "yarn" {
+		yarnDir := filepath.Join(path, ".yarn")
+		os.MkdirAll(yarnDir, 0755)
+		for _, name := range []string{"cache", "install-state.gz", "unplugged"} {
+			src := filepath.Join(repoRoot, ".yarn", name)
+			dst := filepath.Join(yarnDir, name)
+			if _, err := os.Stat(src); err == nil {
+				if _, err := os.Stat(dst); err != nil {
+					exec.Command("cp", "-a", src, dst).Run()
+				}
+			}
+		}
+	}
+	var cmd *exec.Cmd
+	switch pm {
+	case "yarn":
+		cmd = exec.Command("yarn", "install")
+	case "pnpm":
+		cmd = exec.Command("pnpm", "install")
+	case "bun":
+		cmd = exec.Command("bun", "install")
+	default:
+		cmd = exec.Command("npm", "install")
+	}
+	cmd.Dir = path
+	cmd.Run()
+}

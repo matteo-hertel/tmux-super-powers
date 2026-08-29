@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
-	"time"
 )
+
+type Pane struct {
+	ID    string
+	Index int
+}
 
 // SanitizeSessionName replaces tmux-problematic characters (. and :) with hyphens.
 func SanitizeSessionName(name string) string {
@@ -48,9 +53,91 @@ func AttachOrSwitch(name string) error {
 func BuildNewSessionArgs(name, dir, command string) []string {
 	args := []string{"new-session", "-d", "-s", name, "-c", dir}
 	if command != "" {
-		args = append(args, command)
+		args = append(args, shellCommandArgs(command)...)
 	}
 	return args
+}
+
+func BuildSplitPaneArgs(target, dir, command string) []string {
+	args := []string{
+		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
+		"-t", target, "-c", dir,
+	}
+	if command != "" {
+		args = append(args, "/bin/sh", "-c", command)
+	}
+	return args
+}
+
+func SplitPane(session string, parentPane Pane, dir, command string) (Pane, error) {
+	target := paneTarget(session, parentPane)
+	out, err := exec.Command("tmux", BuildSplitPaneArgs(target, dir, command)...).CombinedOutput()
+	if err != nil {
+		return Pane{}, fmt.Errorf("failed to split pane: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return Pane{}, fmt.Errorf("read split pane target: %q", strings.TrimSpace(string(out)))
+	}
+	paneIndex, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return Pane{}, fmt.Errorf("read split pane index: %w", err)
+	}
+	return Pane{ID: parts[0], Index: paneIndex}, nil
+}
+
+func PaneExists(session string, pane Pane) bool {
+	for _, candidate := range Panes(session) {
+		if pane.ID != "" {
+			if candidate.ID == pane.ID {
+				return true
+			}
+			continue
+		}
+		if candidate.Index == pane.Index {
+			return true
+		}
+	}
+	return false
+}
+
+func Panes(session string) []Pane {
+	out, err := exec.Command("tmux", "list-panes", "-t", session+":0", "-F", "#{pane_id}\t#{pane_index}").Output()
+	if err != nil {
+		return nil
+	}
+	var panes []Pane
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			continue
+		}
+		index, parseErr := strconv.Atoi(parts[1])
+		if parseErr != nil {
+			continue
+		}
+		panes = append(panes, Pane{ID: parts[0], Index: index})
+	}
+	return panes
+}
+
+func KillPane(session string, pane Pane) error {
+	if !SessionExists(session) || !PaneExists(session, pane) {
+		return nil
+	}
+	target := paneTarget(session, pane)
+	if err := exec.Command("tmux", "kill-pane", "-t", target).Run(); err != nil {
+		return fmt.Errorf("kill pane %s: %w", target, err)
+	}
+	return nil
+}
+
+func SelectPane(session string, pane Pane) error {
+	target := paneTarget(session, pane)
+	if err := exec.Command("tmux", "select-pane", "-t", target).Run(); err != nil {
+		return fmt.Errorf("select pane %s: %w", target, err)
+	}
+	return nil
 }
 
 // BuildPopupArgs builds the tmux args for display-popup.
@@ -77,65 +164,9 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
-// SendKeys sends literal text to a tmux pane target and presses Enter.
-// Sends text in chunks via send-keys -l to avoid tmux argument-length
-// limits with long strings (e.g. URLs). A short delay separates the
-// literal text from the Enter key to avoid a race condition — each
-// exec.Command spawns a separate tmux client and the server does not
-// guarantee ordering across clients.
-func SendKeys(target, text string) error {
-	// Collapse newlines to spaces so the input stays single-line and
-	// Enter submits rather than inserting a blank line.
-	text = strings.ReplaceAll(text, "\r\n", " ")
-	text = strings.ReplaceAll(text, "\n", " ")
-	text = strings.ReplaceAll(text, "\r", " ")
-
-	const maxChunk = 200
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > maxChunk {
-			chunk = text[:maxChunk]
-		}
-		text = text[len(chunk):]
-		if err := exec.Command("tmux", "send-keys", "-t", target, "-l", chunk).Run(); err != nil {
-			return fmt.Errorf("send-keys: %w", err)
-		}
-	}
-	// Brief delay so the tmux server finishes processing the literal
-	// text before we send Enter from a new client connection.
-	time.Sleep(50 * time.Millisecond)
-	// Press Enter.
-	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
-}
-
-// SendRawKey sends a single non-literal key (e.g. "Down", "Enter", "End") to a pane.
-func SendRawKey(target, key string) error {
-	return exec.Command("tmux", "send-keys", "-t", target, key).Run()
-}
-
-// AnswerPromptFreeText selects "Other" in a Claude Code AskUserQuestion prompt
-// by sending its option number, then types the given text.
-// "Other" is always the last item: optionCount + 1.
-func AnswerPromptFreeText(target string, optionCount int, text string) error {
-	// Select "Other" by its number (last entry = optionCount + 1)
-	otherNum := fmt.Sprintf("%d", optionCount+1)
-	if err := SendKeys(target, otherNum); err != nil {
-		return fmt.Errorf("select other: %w", err)
-	}
-	// Wait for the free-text input prompt to appear
-	time.Sleep(500 * time.Millisecond)
-	// Type the answer and press Enter
-	return SendKeys(target, text)
-}
-
-// BuildListSessionsArgs builds tmux list-sessions args.
-func BuildListSessionsArgs() []string {
-	return []string{"list-sessions", "-F", "#{session_name}:#{session_path}:#{session_activity}"}
-}
-
 // BuildCapturePaneArgs builds tmux capture-pane args.
 func BuildCapturePaneArgs(target string) []string {
-	return []string{"capture-pane", "-t", target, "-p", "-e"}
+	return []string{"capture-pane", "-t", target, "-p", "-e", "-S", "-"}
 }
 
 // CreateTwoPaneSession creates a tmux session with a left and right pane.
@@ -146,10 +177,7 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
-	splitArgs := []string{"split-window", "-h", "-t", name, "-c", dir}
-	if rightCmd != "" {
-		splitArgs = append(splitArgs, rightCmd)
-	}
+	splitArgs := BuildTwoPaneSplitArgs(name, dir, rightCmd)
 	if err := exec.Command("tmux", splitArgs...).Run(); err != nil {
 		return fmt.Errorf("failed to split window: %w", err)
 	}
@@ -158,57 +186,45 @@ func CreateTwoPaneSession(name, dir, leftCmd, rightCmd string) error {
 	return nil
 }
 
-// CreateThreePaneSession creates a session with a full-height left pane and a
-// right column split into a top and bottom pane:
-//
-//	┌──────────┬───────────┐
-//	│          │ topRight  │
-//	│   left   ├───────────┤
-//	│          │ botRight  │
-//	└──────────┴───────────┘
-//
-// Used by spawn to show install (top-right) and the agent (bottom-right)
-// alongside the editor.
-func CreateThreePaneSession(name, dir, leftCmd, topRightCmd, botRightCmd string) error {
-	args := BuildNewSessionArgs(name, dir, leftCmd)
-	if err := exec.Command("tmux", args...).Run(); err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
+func BuildTwoPaneSplitArgs(name, dir, rightCmd string) []string {
+	args := []string{"split-window", "-h", "-l", "20%", "-t", name, "-c", dir}
+	if rightCmd != "" {
+		args = append(args, shellCommandArgs(rightCmd)...)
 	}
+	return args
+}
 
-	// Split off the right column from the left pane (becomes the active pane).
-	rightSplit := []string{"split-window", "-h", "-t", name + ":0.0", "-c", dir}
-	if topRightCmd != "" {
-		rightSplit = append(rightSplit, topRightCmd)
+func shellCommandArgs(command string) []string {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
 	}
-	if err := exec.Command("tmux", rightSplit...).Run(); err != nil {
-		return fmt.Errorf("failed to split right column: %w", err)
-	}
-
-	// Split the active (right) pane vertically for the bottom-right command.
-	botSplit := []string{"split-window", "-v", "-t", name, "-c", dir}
-	if botRightCmd != "" {
-		botSplit = append(botSplit, botRightCmd)
-	}
-	if err := exec.Command("tmux", botSplit...).Run(); err != nil {
-		return fmt.Errorf("failed to split bottom-right pane: %w", err)
-	}
-
-	exec.Command("tmux", "select-pane", "-t", name+":0.0").Run()
-	return nil
+	return []string{shell, "-c", command}
 }
 
 // GetPaneCwd returns the current working directory of a session's first pane.
 func GetPaneCwd(session string) string {
-	return GetPaneCwdByIndex(session, 0)
+	return GetPaneCwdFor(session, Pane{Index: 0})
 }
 
 // GetPaneCwdByIndex returns the current working directory of a specific pane.
 func GetPaneCwdByIndex(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+	return GetPaneCwdFor(session, Pane{Index: pane})
+}
+
+func GetPaneCwdFor(session string, pane Pane) string {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func paneTarget(session string, pane Pane) string {
+	if pane.ID != "" {
+		return pane.ID
+	}
+	return fmt.Sprintf("%s:0.%d", session, pane.Index)
 }

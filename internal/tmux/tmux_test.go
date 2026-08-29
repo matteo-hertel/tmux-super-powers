@@ -1,7 +1,12 @@
 package tmux
 
 import (
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitizeSessionName_Dots(t *testing.T) {
@@ -45,8 +50,9 @@ func TestSanitizeSessionName_Empty(t *testing.T) {
 }
 
 func TestBuildSessionArgs_NewSession(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
 	args := BuildNewSessionArgs("test-session", "/tmp/dir", "nvim")
-	expected := []string{"new-session", "-d", "-s", "test-session", "-c", "/tmp/dir", "nvim"}
+	expected := []string{"new-session", "-d", "-s", "test-session", "-c", "/tmp/dir", "/bin/sh", "-c", "nvim"}
 	if len(args) != len(expected) {
 		t.Fatalf("BuildNewSessionArgs length = %d, want %d", len(args), len(expected))
 	}
@@ -110,20 +116,9 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 	}
 }
 
-// SendKeys is tested via integration (requires tmux).
-// The implementation uses load-buffer/paste-buffer to reliably handle
-// arbitrary text including URLs and special characters.
-
-func TestBuildListSessionsArgs(t *testing.T) {
-	args := BuildListSessionsArgs()
-	if args[0] != "list-sessions" {
-		t.Errorf("expected list-sessions, got %s", args[0])
-	}
-}
-
 func TestBuildCapturePaneArgs(t *testing.T) {
 	args := BuildCapturePaneArgs("mysession:0.1")
-	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e"}
+	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e", "-S", "-"}
 	if len(args) != len(expected) {
 		t.Fatalf("BuildCapturePaneArgs length = %d, want %d", len(args), len(expected))
 	}
@@ -131,5 +126,109 @@ func TestBuildCapturePaneArgs(t *testing.T) {
 		if a != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
 		}
+	}
+}
+
+func TestBuildTwoPaneSplitArgsUsesTwentyPercentRightPane(t *testing.T) {
+	args := BuildTwoPaneSplitArgs("mysession", "/work/project", "")
+	expected := []string{"split-window", "-h", "-l", "20%", "-t", "mysession", "-c", "/work/project"}
+	if len(args) != len(expected) {
+		t.Fatalf("BuildTwoPaneSplitArgs length = %d, want %d", len(args), len(expected))
+	}
+	for i, arg := range args {
+		if arg != expected[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
+		}
+	}
+}
+
+func TestBuildSplitPaneArgsTargetsParentPane(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	args := BuildSplitPaneArgs("project-task:0.1", "/work/project-task", "claude -p 'check CI'")
+	expected := []string{
+		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
+		"-t", "project-task:0.1", "-c", "/work/project-task", "/bin/sh", "-c", "claude -p 'check CI'",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("BuildSplitPaneArgs length = %d, want %d", len(args), len(expected))
+	}
+	for i, arg := range args {
+		if arg != expected[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
+		}
+	}
+}
+
+func TestSplitPaneUsesStableIDAfterPaneIndicesMove(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-pane-id-test-%d", time.Now().UnixNano())
+	if err := CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
+		t.Fatalf("CreateTwoPaneSession() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillSession(session)
+	})
+
+	delegated, err := SplitPane(session, Pane{Index: 0}, t.TempDir(), "printf 'done\\n'")
+	if err != nil {
+		t.Fatalf("SplitPane() error = %v", err)
+	}
+	if delegated.ID == "" {
+		t.Fatal("SplitPane() returned an empty pane ID")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && PaneExists(session, delegated) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if PaneExists(session, delegated) {
+		t.Fatal("completed pane still exists by stable ID")
+	}
+	if !PaneExists(session, Pane{Index: delegated.Index}) {
+		t.Fatal("expected the shell pane to reuse the completed pane index")
+	}
+}
+
+func TestCreateTwoPaneSessionUsesTwosplitLayout(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-layout-test-%d", time.Now().UnixNano())
+	if err := CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
+		t.Fatalf("CreateTwoPaneSession() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillSession(session)
+	})
+
+	out, err := exec.Command("tmux", "list-panes", "-t", session+":0", "-F", "#{pane_index}|#{pane_width}").Output()
+	if err != nil {
+		t.Fatalf("list panes: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("pane count = %d, want 2: %q", len(lines), out)
+	}
+	widths := make(map[int]int, 2)
+	for _, line := range lines {
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			t.Fatalf("invalid pane row: %q", line)
+		}
+		index, indexErr := strconv.Atoi(parts[0])
+		width, widthErr := strconv.Atoi(parts[1])
+		if indexErr != nil || widthErr != nil {
+			t.Fatalf("invalid pane dimensions: %q", line)
+		}
+		widths[index] = width
+	}
+	total := widths[0] + widths[1] + 1
+	rightPercent := widths[1] * 100 / total
+	if rightPercent < 19 || rightPercent > 21 {
+		t.Fatalf("pane widths = %d/%d, right pane = %d%%", widths[0], widths[1], rightPercent)
 	}
 }

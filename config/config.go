@@ -4,51 +4,53 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+)
+
+var managerModelFlag = regexp.MustCompile(`(^|[[:space:]])--model(=|[[:space:]]+)([^[:space:]]+)`)
+
 type Config struct {
 	Directories       []string      `yaml:"directories"`
 	IgnoreDirectories []string      `yaml:"ignore_directories"`
-	Sandbox           Sandbox       `yaml:"sandbox"`
 	Projects          Projects      `yaml:"projects"`
 	Editor            string        `yaml:"editor"`
-	Dash              DashConfig    `yaml:"dash"`
 	Spawn             SpawnConfig   `yaml:"spawn"`
-	Serve             ServeConfig   `yaml:"serve"`
-	Watcher           WatcherConfig `yaml:"watcher"`
-}
-
-type DashConfig struct {
-	RefreshMs     int      `yaml:"refresh_ms"`
-	ErrorPatterns []string `yaml:"error_patterns"`
-	PromptPattern string   `yaml:"prompt_pattern"`
-	InputPatterns []string `yaml:"input_patterns"`
+	Manager           ManagerConfig `yaml:"manager"`
 }
 
 type SpawnConfig struct {
-	WorktreeBase string `yaml:"worktree_base"`
-	AgentCommand string `yaml:"agent_command"`
-	DefaultSetup string `yaml:"default_setup"`
+	WorktreeBase  string `yaml:"worktree_base"`
+	AgentCommand  string `yaml:"agent_command"`
+	ClaudeCommand string `yaml:"claude_command"`
+	CodexCommand  string `yaml:"codex_command"`
+	DefaultSetup  string `yaml:"default_setup"`
 }
 
-type ServeConfig struct {
-	Port      int    `yaml:"port"`
-	Bind      string `yaml:"bind"`
-	RefreshMs int    `yaml:"refresh_ms"`
+type ManagerConfig struct {
+	DefaultAgent       string             `yaml:"default_agent"`
+	Claude             ManagerAgentConfig `yaml:"claude"`
+	Codex              ManagerAgentConfig `yaml:"codex"`
+	LegacyAgentCommand string             `yaml:"agent_command,omitempty"`
 }
 
-type WatcherConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	PollIntervalS int  `yaml:"poll_interval_s"`
-	MaxCIRetries  int  `yaml:"max_ci_retries"`
-	AutoCleanup   bool `yaml:"auto_cleanup"`
+type ManagerAgentConfig struct {
+	Command string `yaml:"command"`
+	Model   string `yaml:"model"`
 }
 
-type Sandbox struct {
-	Path string `yaml:"path"`
+func (m ManagerConfig) Agent(agent string) ManagerAgentConfig {
+	if agent == AgentCodex {
+		return m.Codex
+	}
+	return m.Claude
 }
 
 type Projects struct {
@@ -137,50 +139,32 @@ func LoadFrom(configPath string) (*Config, error) {
 		}
 	}
 
-	// Dash defaults
-	if cfg.Dash.RefreshMs == 0 {
-		cfg.Dash.RefreshMs = 500
-	}
-	if cfg.Dash.PromptPattern == "" {
-		cfg.Dash.PromptPattern = `(\$|❯)\s*$`
-	}
-	if len(cfg.Dash.ErrorPatterns) == 0 {
-		cfg.Dash.ErrorPatterns = []string{"FAIL", "panic:", "Error:"}
-	}
-	if len(cfg.Dash.InputPatterns) == 0 {
-		cfg.Dash.InputPatterns = []string{
-			`^\s*\? `,
-			`\(y/n\)`,
-			`\(Y/n\)`,
-			`Do you want to`,
-			`Press Enter`,
-			`(?i)type something`,
+	homeDir, _ := os.UserHomeDir()
+	if len(cfg.Directories) == 0 {
+		cfg.Directories = []string{
+			filepath.Join(homeDir, "projects"),
+			filepath.Join(homeDir, "work"),
 		}
+	}
+	if cfg.Projects.Path == "" {
+		cfg.Projects.Path = filepath.Join(homeDir, "projects")
 	}
 
 	// Spawn defaults
-	homeDir, _ := os.UserHomeDir()
 	if cfg.Spawn.AgentCommand == "" {
 		cfg.Spawn.AgentCommand = "claude --dangerously-skip-permissions"
+	}
+	if cfg.Spawn.ClaudeCommand == "" {
+		cfg.Spawn.ClaudeCommand = "claude --dangerously-skip-permissions"
+	}
+	if cfg.Spawn.CodexCommand == "" {
+		cfg.Spawn.CodexCommand = "codex --full-auto"
 	}
 	if cfg.Spawn.WorktreeBase == "" {
 		cfg.Spawn.WorktreeBase = filepath.Join(homeDir, "work", "code")
 	}
-
-	// Serve defaults
-	if cfg.Serve.Port == 0 {
-		cfg.Serve.Port = 7777
-	}
-	if cfg.Serve.RefreshMs == 0 {
-		cfg.Serve.RefreshMs = cfg.Dash.RefreshMs
-	}
-
-	// Watcher defaults
-	if cfg.Watcher.PollIntervalS == 0 {
-		cfg.Watcher.PollIntervalS = 30
-	}
-	if cfg.Watcher.MaxCIRetries == 0 {
-		cfg.Watcher.MaxCIRetries = 3
+	if err := normalizeManagerConfig(&cfg.Manager); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil
@@ -212,40 +196,17 @@ func defaultConfig() *Config {
 			filepath.Join(homeDir, "projects"),
 			filepath.Join(homeDir, "work"),
 		},
-		Sandbox: Sandbox{
-			Path: filepath.Join(homeDir, "sandbox"),
-		},
 		Projects: Projects{
 			Path: filepath.Join(homeDir, "projects"),
 		},
 		Editor: os.Getenv("EDITOR"),
-		Dash: DashConfig{
-			RefreshMs:     500,
-			ErrorPatterns: []string{"FAIL", "panic:", "Error:"},
-			PromptPattern: `(\$|❯)\s*$`,
-			InputPatterns: []string{
-				`^\s*\? `,
-				`\(y/n\)`,
-				`\(Y/n\)`,
-				`Do you want to`,
-				`Press Enter`,
-				`(?i)type something`,
-			},
-		},
 		Spawn: SpawnConfig{
-			WorktreeBase: filepath.Join(homeDir, "work", "code"),
-			AgentCommand: "claude --dangerously-skip-permissions",
+			WorktreeBase:  filepath.Join(homeDir, "work", "code"),
+			AgentCommand:  "claude --dangerously-skip-permissions",
+			ClaudeCommand: "claude --dangerously-skip-permissions",
+			CodexCommand:  "codex --full-auto",
 		},
-		Serve: ServeConfig{
-			Port:      7777,
-			RefreshMs: 500,
-		},
-		Watcher: WatcherConfig{
-			Enabled:       true,
-			PollIntervalS: 30,
-			MaxCIRetries:  3,
-			AutoCleanup:   true,
-		},
+		Manager: defaultManagerConfig(),
 	}
 }
 
@@ -266,21 +227,13 @@ func Repair(cfg *Config) ([]string, *Config) {
 	defaults := defaultConfig()
 	var changes []string
 
-	if len(cfg.Dash.ErrorPatterns) == 0 {
-		cfg.Dash.ErrorPatterns = defaults.Dash.ErrorPatterns
-		changes = append(changes, "dash.error_patterns: set to defaults")
+	if len(cfg.Directories) == 0 {
+		cfg.Directories = defaults.Directories
+		changes = append(changes, "directories: set to defaults")
 	}
-	if cfg.Dash.PromptPattern == "" {
-		cfg.Dash.PromptPattern = defaults.Dash.PromptPattern
-		changes = append(changes, "dash.prompt_pattern: set to default")
-	}
-	if len(cfg.Dash.InputPatterns) == 0 {
-		cfg.Dash.InputPatterns = defaults.Dash.InputPatterns
-		changes = append(changes, "dash.input_patterns: set to defaults")
-	}
-	if cfg.Dash.RefreshMs == 0 {
-		cfg.Dash.RefreshMs = defaults.Dash.RefreshMs
-		changes = append(changes, "dash.refresh_ms: set to 500")
+	if cfg.Projects.Path == "" {
+		cfg.Projects.Path = defaults.Projects.Path
+		changes = append(changes, "projects.path: set to default")
 	}
 	if cfg.Spawn.AgentCommand == "" {
 		cfg.Spawn.AgentCommand = defaults.Spawn.AgentCommand
@@ -290,21 +243,108 @@ func Repair(cfg *Config) ([]string, *Config) {
 		cfg.Spawn.WorktreeBase = defaults.Spawn.WorktreeBase
 		changes = append(changes, "spawn.worktree_base: set to default")
 	}
-	if cfg.Serve.Port == 0 {
-		cfg.Serve.Port = defaults.Serve.Port
-		changes = append(changes, "serve.port: set to 7777")
+	if cfg.Spawn.ClaudeCommand == "" {
+		cfg.Spawn.ClaudeCommand = defaults.Spawn.ClaudeCommand
+		changes = append(changes, "spawn.claude_command: set to default")
 	}
-	if cfg.Serve.RefreshMs == 0 {
-		cfg.Serve.RefreshMs = defaults.Serve.RefreshMs
-		changes = append(changes, "serve.refresh_ms: set to default")
+	if cfg.Spawn.CodexCommand == "" {
+		cfg.Spawn.CodexCommand = defaults.Spawn.CodexCommand
+		changes = append(changes, "spawn.codex_command: set to default")
 	}
-	// Watcher section (new)
-	if cfg.Watcher.PollIntervalS == 0 {
-		cfg.Watcher = defaults.Watcher
-		changes = append(changes, "watcher: added with defaults (enabled, 30s poll, 3 retries, auto-cleanup)")
+	if cfg.Manager.DefaultAgent == "" {
+		cfg.Manager.DefaultAgent = defaults.Manager.DefaultAgent
+		changes = append(changes, "manager.default_agent: set to default")
 	}
-
+	if cfg.Manager.Claude.Command == "" {
+		cfg.Manager.Claude.Command = defaults.Manager.Claude.Command
+		changes = append(changes, "manager.claude.command: set to default")
+	}
+	if cfg.Manager.Claude.Model == "" {
+		cfg.Manager.Claude.Model = defaults.Manager.Claude.Model
+		changes = append(changes, "manager.claude.model: set to default")
+	}
+	if cfg.Manager.Codex.Command == "" {
+		cfg.Manager.Codex.Command = defaults.Manager.Codex.Command
+		changes = append(changes, "manager.codex.command: set to default")
+	}
+	if cfg.Manager.Codex.Model == "" {
+		cfg.Manager.Codex.Model = defaults.Manager.Codex.Model
+		changes = append(changes, "manager.codex.model: set to default")
+	}
 	return changes, cfg
+}
+
+func defaultManagerConfig() ManagerConfig {
+	return ManagerConfig{
+		DefaultAgent: AgentClaude,
+		Claude: ManagerAgentConfig{
+			Command: "claude -p --permission-mode auto",
+			Model:   "haiku",
+		},
+		Codex: ManagerAgentConfig{
+			Command: "codex exec --ephemeral --sandbox workspace-write",
+			Model:   "gpt-5.6-luna",
+		},
+	}
+}
+
+func normalizeManagerConfig(manager *ManagerConfig) error {
+	defaults := defaultManagerConfig()
+	if strings.TrimSpace(manager.LegacyAgentCommand) != "" {
+		agent := managerAgentFromCommand(manager.LegacyAgentCommand)
+		command, model := splitManagerModel(manager.LegacyAgentCommand)
+		selected := &manager.Claude
+		if agent == AgentCodex {
+			selected = &manager.Codex
+		}
+		if selected.Command == "" {
+			selected.Command = command
+		}
+		if selected.Model == "" {
+			selected.Model = model
+		}
+		if manager.DefaultAgent == "" {
+			manager.DefaultAgent = agent
+		}
+		manager.LegacyAgentCommand = ""
+	}
+	if manager.DefaultAgent == "" {
+		manager.DefaultAgent = defaults.DefaultAgent
+	}
+	if manager.DefaultAgent != AgentClaude && manager.DefaultAgent != AgentCodex {
+		return fmt.Errorf("manager.default_agent must be %q or %q", AgentClaude, AgentCodex)
+	}
+	if manager.Claude.Command == "" {
+		manager.Claude.Command = defaults.Claude.Command
+	}
+	if manager.Claude.Model == "" {
+		manager.Claude.Model = defaults.Claude.Model
+	}
+	if manager.Codex.Command == "" {
+		manager.Codex.Command = defaults.Codex.Command
+	}
+	if manager.Codex.Model == "" {
+		manager.Codex.Model = defaults.Codex.Model
+	}
+	return nil
+}
+
+func managerAgentFromCommand(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) > 0 && strings.Contains(filepath.Base(strings.Trim(fields[0], `'"`)), "codex") {
+		return AgentCodex
+	}
+	return AgentClaude
+}
+
+func splitManagerModel(command string) (string, string) {
+	match := managerModelFlag.FindStringSubmatchIndex(command)
+	if match == nil {
+		return strings.TrimSpace(command), ""
+	}
+	model := strings.Trim(command[match[6]:match[7]], `'"`)
+	command = strings.TrimSpace(command[:match[0]] + " " + command[match[1]:])
+	return strings.Join(strings.Fields(command), " "), model
 }
 
 // oldConfigPath returns the legacy config file path (~/.tmux-super-powers.yaml).

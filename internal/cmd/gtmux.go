@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/matteo-hertel/tmux-super-powers/config"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -14,16 +15,21 @@ import (
 var wtxNewCmd = &cobra.Command{
 	Use:   "wtx-new [branch1] [branch2] ...",
 	Short: "Create git worktrees with tmux sessions",
-	Long: `Create git worktrees for specified branches and set up tmux sessions with neovim and claude.
+	Long: `Create git worktrees for specified branches and set up tmux sessions with an agent and shell.
 
 For each branch:
 1. Creates the branch from current branch if it doesn't exist
 2. Creates worktree under ~/work/code/<repo-name>-<branch>
 3. Detects and runs the appropriate package manager (yarn, npm, pnpm, bun)
-4. Creates tmux session with neovim (left) and claude (right)`,
+4. Creates a tmux session with the configured agent (left 80%) and a shell (right 20%)`,
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		branches := args
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			return
+		}
 
 		if !isGitRepo() {
 			fmt.Fprintf(os.Stderr, "Error: Not a git repository\n")
@@ -46,7 +52,7 @@ For each branch:
 
 		for _, branch := range branches {
 			fmt.Printf("Processing branch: %s\n", branch)
-			
+
 			if !branchExists(branch) {
 				fmt.Printf("Branch '%s' does not exist. Creating it from '%s'...\n", branch, currentBranch)
 				if err := createBranch(branch, currentBranch); err != nil {
@@ -79,8 +85,11 @@ For each branch:
 			}
 
 			sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", repoName, branch))
-			fmt.Printf("Creating tmux session '%s' with neovim and claude...\n", sessionName)
-			createGitWorktreeSession(sessionName, worktreePath)
+			fmt.Printf("Creating tmux session '%s'...\n", sessionName)
+			if err := createGitWorktreeSession(sessionName, worktreePath, cfg.Spawn.AgentCommand); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+				continue
+			}
 
 			fmt.Printf("Tmux session '%s' created successfully.\n", sessionName)
 		}
@@ -188,7 +197,7 @@ func runPackageManager(pm, path string) error {
 	return cmd.Run()
 }
 
-func createGitWorktreeSession(sessionName, path string) {
+func createGitWorktreeSession(sessionName, path, agentCommand string) error {
 	tmuxpkg.KillSession(sessionName)
-	tmuxpkg.CreateTwoPaneSession(sessionName, path, "nvim", "claude --dangerously-skip-permissions")
+	return tmuxpkg.CreateTwoPaneSession(sessionName, path, agentCommand, "")
 }

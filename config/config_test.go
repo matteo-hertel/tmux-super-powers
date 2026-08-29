@@ -77,22 +77,26 @@ func TestLoad_EditorFallback(t *testing.T) {
 	}
 }
 
-func TestLoadDashConfig(t *testing.T) {
+func TestLoadSpawnConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	content := []byte(`
 directories:
   - ~/projects
-dash:
-  refresh_ms: 300
-  error_patterns:
-    - "FAIL"
-    - "panic:"
-  prompt_pattern: "\\$\\s*$"
 spawn:
   worktree_base: ~/work/code
   agent_command: "claude --dangerously-skip-permissions"
+  claude_command: "claude --dangerously-skip-permissions"
+  codex_command: "codex --full-auto"
   default_setup: "cp ../.env .env"
+manager:
+  default_agent: codex
+  claude:
+    command: "claude -p --permission-mode auto"
+    model: haiku
+  codex:
+    command: "codex exec --ephemeral --sandbox workspace-write"
+    model: gpt-5.6-luna
 `)
 	os.WriteFile(configPath, content, 0644)
 
@@ -100,24 +104,27 @@ spawn:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Dash.RefreshMs != 300 {
-		t.Errorf("expected refresh_ms 300, got %d", cfg.Dash.RefreshMs)
-	}
-	if len(cfg.Dash.ErrorPatterns) != 2 {
-		t.Errorf("expected 2 error patterns, got %d", len(cfg.Dash.ErrorPatterns))
-	}
-	if cfg.Dash.PromptPattern != "\\$\\s*$" {
-		t.Errorf("unexpected prompt pattern: %s", cfg.Dash.PromptPattern)
-	}
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("unexpected agent command: %s", cfg.Spawn.AgentCommand)
 	}
 	if cfg.Spawn.DefaultSetup != "cp ../.env .env" {
 		t.Errorf("unexpected default setup: %s", cfg.Spawn.DefaultSetup)
 	}
+	if cfg.Spawn.ClaudeCommand != "claude --dangerously-skip-permissions" || cfg.Spawn.CodexCommand != "codex --full-auto" {
+		t.Errorf("unexpected selectable spawn commands: %#v", cfg.Spawn)
+	}
+	if cfg.Manager.DefaultAgent != AgentCodex {
+		t.Errorf("unexpected default manager agent: %s", cfg.Manager.DefaultAgent)
+	}
+	if cfg.Manager.Codex.Command != "codex exec --ephemeral --sandbox workspace-write" {
+		t.Errorf("unexpected manager agent command: %s", cfg.Manager.Codex.Command)
+	}
+	if cfg.Manager.Codex.Model != "gpt-5.6-luna" {
+		t.Errorf("unexpected manager model: %s", cfg.Manager.Codex.Model)
+	}
 }
 
-func TestDashConfigDefaults(t *testing.T) {
+func TestSpawnConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	os.WriteFile(configPath, []byte("directories:\n  - ~/projects\n"), 0644)
@@ -126,11 +133,59 @@ func TestDashConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Dash.RefreshMs != 500 {
-		t.Errorf("expected default refresh_ms 500, got %d", cfg.Dash.RefreshMs)
-	}
 	if cfg.Spawn.AgentCommand != "claude --dangerously-skip-permissions" {
 		t.Errorf("expected default agent command, got: %s", cfg.Spawn.AgentCommand)
+	}
+	if cfg.Spawn.ClaudeCommand != "claude --dangerously-skip-permissions" || cfg.Spawn.CodexCommand != "codex --full-auto" {
+		t.Errorf("unexpected selectable spawn defaults: %#v", cfg.Spawn)
+	}
+	if cfg.Manager.DefaultAgent != AgentClaude {
+		t.Errorf("expected claude manager default, got: %s", cfg.Manager.DefaultAgent)
+	}
+	if cfg.Manager.Claude.Command != "claude -p --permission-mode auto" || cfg.Manager.Claude.Model != "haiku" {
+		t.Errorf("unexpected claude manager defaults: %#v", cfg.Manager.Claude)
+	}
+	if cfg.Manager.Codex.Command != "codex exec --ephemeral --sandbox workspace-write" || cfg.Manager.Codex.Model != "gpt-5.6-luna" {
+		t.Errorf("unexpected codex manager defaults: %#v", cfg.Manager.Codex)
+	}
+	if cfg.Projects.Path == "" {
+		t.Error("expected project path default, got empty")
+	}
+}
+
+func TestLoadLegacyManagerCommand(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte("manager:\n  agent_command: claude -p --model sonnet --permission-mode auto\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if cfg.Manager.DefaultAgent != AgentClaude {
+		t.Fatalf("default manager agent = %q, want claude", cfg.Manager.DefaultAgent)
+	}
+	if cfg.Manager.Claude.Command != "claude -p --permission-mode auto" {
+		t.Fatalf("legacy manager command = %q", cfg.Manager.Claude.Command)
+	}
+	if cfg.Manager.Claude.Model != "sonnet" {
+		t.Fatalf("legacy manager model = %q, want sonnet", cfg.Manager.Claude.Model)
+	}
+	if cfg.Manager.LegacyAgentCommand != "" {
+		t.Fatalf("legacy field was not cleared: %q", cfg.Manager.LegacyAgentCommand)
+	}
+}
+
+func TestLoadRejectsUnknownDefaultManagerAgent(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("manager:\n  default_agent: aider\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFrom(configPath); err == nil {
+		t.Fatal("LoadFrom() accepted an unknown default manager agent")
 	}
 }
 
@@ -141,7 +196,6 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 	original := &Config{
 		Directories: []string{"/tmp/a", "/tmp/b"},
 		Editor:      "code",
-		Sandbox:     Sandbox{Path: "/tmp/sandbox"},
 		Projects:    Projects{Path: "/tmp/projects"},
 	}
 
@@ -206,5 +260,31 @@ func TestLoad_NewPathTakesPriority(t *testing.T) {
 	}
 	if cfg.Editor != "new" {
 		t.Errorf("Editor = %q, want \"new\"", cfg.Editor)
+	}
+}
+
+func TestLoad_IgnoresRemovedLegacySections(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`
+projects:
+  path: /tmp/projects
+dash:
+  refresh_ms: 100
+serve:
+  port: 7777
+watcher:
+  enabled: true
+sandbox:
+  path: /tmp/sandbox
+`)
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(configPath)
+	if err != nil {
+		t.Fatalf("legacy keys should be ignored, got error: %v", err)
+	}
+	if cfg.Projects.Path != "/tmp/projects" {
+		t.Fatalf("active project config was not loaded: %#v", cfg.Projects)
 	}
 }

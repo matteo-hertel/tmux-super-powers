@@ -133,18 +133,18 @@ func (m worktreeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m worktreeModel) View() string {
 	view := m.list.View()
-	
+
 	var selectedItems []string
 	for idx := range m.selected {
 		if idx < len(m.worktrees) {
 			selectedItems = append(selectedItems, m.worktrees[idx].Branch)
 		}
 	}
-	
+
 	if len(selectedItems) > 0 {
 		view += fmt.Sprintf("\nSelected: %s", strings.Join(selectedItems, ", "))
 	}
-	
+
 	return view
 }
 

@@ -9,8 +9,8 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "tsp",
-	Short: "tmux super powers - Enhanced tmux functionality",
-	Long:  `tmux-super-powers (tsp) provides enhanced functionality for tmux users including session management, quick directory access, and sandbox project creation.`,
+	Short: "Manage tmux projects, worktrees, and coding agents",
+	Long:  `tmux-super-powers (tsp) keeps project navigation, tmux sessions, git worktrees, and local coding agents in one focused CLI.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		versionFlag, _ := cmd.Flags().GetBool("version")
 		if versionFlag {
@@ -27,25 +27,18 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(txrmCmd)
 	rootCmd.AddCommand(dirCmd)
-	rootCmd.AddCommand(sandboxCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(wtxNewCmd)
 	rootCmd.AddCommand(wtxHereCmd)
 	rootCmd.AddCommand(wtxRmCmd)
 	rootCmd.AddCommand(middleCmd)
-	rootCmd.AddCommand(peekCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(dashCmd)
 	rootCmd.AddCommand(spawnCmd)
-	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(rmCmd)
-	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(cleanupCmd)
-	rootCmd.AddCommand(deviceCmd)
-	rootCmd.AddCommand(duckCmd)
 
 	// Add version flag
 	rootCmd.Flags().BoolP("version", "v", false, "Show version information")

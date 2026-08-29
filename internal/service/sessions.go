@@ -1,61 +1,21 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"time"
 
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 )
 
-// Session represents a tmux session with enriched metadata.
-type Session struct {
-	Name         string    `json:"name"`
-	Status       string    `json:"status"`
-	Branch       string    `json:"branch,omitempty"`
-	IsWorktree   bool      `json:"isWorktree"`
-	IsGitRepo    bool      `json:"isGitRepo"`
-	GitPath      string    `json:"-"`
-	LastChanged  time.Time `json:"lastChanged"`
-	Panes        []Pane    `json:"panes"`
-	Diff         *DiffStat `json:"diff,omitempty"`
-	PR           *PRInfo   `json:"pr,omitempty"`
-	PrevContent  string    `json:"-"`
-	WorktreePath string    `json:"worktreePath,omitempty"`
-	Dir          string    `json:"dir,omitempty"`
-}
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]`)
 
-// Pane represents a single pane within a tmux session.
-type Pane struct {
-	Index          int    `json:"index"`
-	Type           string `json:"type"` // editor, agent, shell, process
-	Process        string `json:"process"`
-	Status         string `json:"status,omitempty"`
-	Content        string `json:"content,omitempty"`
-	Prompt         string `json:"prompt,omitempty"`
-	AgentSessionID string `json:"agentSessionId,omitempty"` // Deprecated: Claude Code JSONL session UUID.
-	AgentRunID     string `json:"agentRunId,omitempty"`
-	AgentProvider  string `json:"agentProvider,omitempty"`
-	AgentPID       int    `json:"agentPid,omitempty"`
-}
-
-// DiffStat holds git diff statistics.
-type DiffStat struct {
-	Files      int `json:"files"`
-	Insertions int `json:"insertions"`
-	Deletions  int `json:"deletions"`
-}
-
-// PRInfo holds pull request metadata.
-type PRInfo struct {
-	Number      int    `json:"number"`
-	URL         string `json:"url"`
-	CIStatus    string `json:"ciStatus"`
-	ReviewCount int    `json:"reviewCount"`
+// StripANSI removes terminal control sequences from captured pane output.
+func StripANSI(text string) string {
+	return strings.ReplaceAll(ansiEscapePattern.ReplaceAllString(text, ""), "\r", "")
 }
 
 // PaneTypeFromProcess classifies a pane's process into a category.
@@ -123,8 +83,8 @@ func ListSessions() ([]string, error) {
 }
 
 // GetAgentPaneCwd returns the working directory of a specific pane.
-func GetAgentPaneCwd(session string, pane int) string {
-	return tmuxpkg.GetPaneCwdByIndex(session, pane)
+func GetAgentPaneCwd(session string, pane tmuxpkg.Pane) string {
+	return tmuxpkg.GetPaneCwdFor(session, pane)
 }
 
 // AgentProcessInfo describes the controllable agent process for a pane.
@@ -136,7 +96,7 @@ type AgentProcessInfo struct {
 
 // DetectPaneAgentProcess resolves the agent process for a tmux pane. It checks
 // the pane process first, then direct shell children for wrapped agent commands.
-func DetectPaneAgentProcess(session string, pane int, paneProcess string) AgentProcessInfo {
+func DetectPaneAgentProcess(session string, pane tmuxpkg.Pane, paneProcess string) AgentProcessInfo {
 	panePID := GetPanePID(session, pane)
 	provider := DetectAgentProvider(paneProcess)
 	if provider != AgentProviderFallback && panePID != 0 {
@@ -155,8 +115,8 @@ func DetectPaneAgentProcess(session string, pane int, paneProcess string) AgentP
 }
 
 // GetPanePID returns the root process ID for a tmux pane.
-func GetPanePID(session string, pane int) int {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func GetPanePID(session string, pane tmuxpkg.Pane) int {
+	target := paneTarget(session, pane)
 	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
 	pidOut, err := pidCmd.Output()
 	if err != nil {
@@ -171,91 +131,6 @@ func GetPanePID(session string, pane int) int {
 		return 0
 	}
 	return pid
-}
-
-// GetAgentSessionID resolves the Claude Code JSONL session UUID for a tmux pane
-// by tracing the process tree and checking open file descriptors via lsof.
-// Claude Code keeps ~/.claude/tasks/<session-uuid>/ open while running.
-// Returns "" if the session ID cannot be determined.
-func GetAgentSessionID(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	// Step 1: Get pane PID
-	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
-	pidOut, err := pidCmd.Output()
-	if err != nil {
-		return ""
-	}
-	panePid := strings.TrimSpace(string(pidOut))
-	if panePid == "" {
-		return ""
-	}
-
-	// Step 2: Find the claude process (may be the pane itself or a child)
-	claudePid := findClaudePid(panePid)
-	if claudePid == "" {
-		return ""
-	}
-
-	// Step 3: Extract session UUID from lsof — claude keeps ~/.claude/tasks/<uuid>/ open
-	lsofCmd := exec.Command("lsof", "-p", claudePid)
-	lsofOut, err := lsofCmd.Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(lsofOut), "\n") {
-		if strings.Contains(line, ".claude/tasks/") {
-			// Extract the UUID directory name
-			idx := strings.Index(line, ".claude/tasks/")
-			if idx < 0 {
-				continue
-			}
-			rest := line[idx+len(".claude/tasks/"):]
-			// UUID is up to the next / or end of field
-			if slashIdx := strings.IndexByte(rest, '/'); slashIdx > 0 {
-				rest = rest[:slashIdx]
-			}
-			rest = strings.TrimSpace(rest)
-			if rest != "" && len(rest) > 8 { // sanity check: UUID-like
-				return rest
-			}
-		}
-	}
-	return ""
-}
-
-// findClaudePid finds the claude process PID from a shell PID by checking children.
-func findClaudePid(shellPid string) string {
-	// Check if the shell itself is claude
-	commCmd := exec.Command("ps", "-p", shellPid, "-o", "comm=")
-	commOut, err := commCmd.Output()
-	if err == nil {
-		comm := strings.TrimSpace(string(commOut))
-		if comm == "claude" || isClaudeVersion(comm) {
-			return shellPid
-		}
-	}
-	// Check children
-	pgrepCmd := exec.Command("pgrep", "-P", shellPid)
-	pgrepOut, err := pgrepCmd.Output()
-	if err != nil {
-		return ""
-	}
-	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
-		pid = strings.TrimSpace(pid)
-		if pid == "" {
-			continue
-		}
-		commCmd := exec.Command("ps", "-p", pid, "-o", "comm=")
-		commOut, err := commCmd.Output()
-		if err != nil {
-			continue
-		}
-		comm := strings.TrimSpace(string(commOut))
-		if comm == "claude" || isClaudeVersion(comm) {
-			return pid
-		}
-	}
-	return ""
 }
 
 func findAgentProcessInfo(shellPid string) AgentProcessInfo {
@@ -285,24 +160,9 @@ func findAgentProcessInfo(shellPid string) AgentProcessInfo {
 	return AgentProcessInfo{}
 }
 
-// hasAgentChild checks if a shell pane has an agent (claude/aider/codex) as a child process.
-func hasAgentChild(session string, pane int) bool {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
-	pidOut, err := pidCmd.Output()
-	if err != nil {
-		return false
-	}
-	panePid := strings.TrimSpace(string(pidOut))
-	if panePid == "" {
-		return false
-	}
-	return findAgentProcessInfo(panePid).Provider != ""
-}
-
 // GetPaneProcess returns the current command running in a specific pane.
-func GetPaneProcess(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func GetPaneProcess(session string, pane tmuxpkg.Pane) string {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_command}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -311,42 +171,37 @@ func GetPaneProcess(session string, pane int) string {
 	return strings.TrimSpace(string(out))
 }
 
-// GetPaneCount returns the number of panes in a session's first window.
-func GetPaneCount(session string) int {
-	cmd := exec.Command("tmux", "list-panes", "-t", session, "-F", "#{pane_index}")
+// IsPaneDead reports whether tmux is retaining a pane whose command has
+// already exited.
+func IsPaneDead(session string, pane tmuxpkg.Pane) bool {
+	target := paneTarget(session, pane)
+	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_dead}")
 	out, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return 0
-	}
-	return len(strings.Split(raw, "\n"))
+	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
-// CapturePaneContent captures the visible content of a pane.
-// Falls back to pane 0 if the requested pane fails.
-func CapturePaneContent(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+// CapturePaneContent captures a pane and its tmux scrollback.
+func CapturePaneContent(session string, pane tmuxpkg.Pane) string {
+	target := paneTarget(session, pane)
 	args := tmuxpkg.BuildCapturePaneArgs(target)
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		// Fall back to pane 0 if the requested pane failed.
-		if pane != 0 {
-			fallbackTarget := fmt.Sprintf("%s:0.0", session)
-			fallbackArgs := tmuxpkg.BuildCapturePaneArgs(fallbackTarget)
-			fallbackCmd := exec.Command("tmux", fallbackArgs...)
-			fallbackOut, fallbackErr := fallbackCmd.Output()
-			if fallbackErr != nil {
-				return ""
-			}
-			return StripANSI(string(fallbackOut))
-		}
 		return ""
 	}
 	return StripANSI(string(out))
+}
+
+func ReadStoredAgentOutput(path string) string {
+	target, err := delegatedOutputTarget(path)
+	if err != nil || target == "" {
+		return ""
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return ""
+	}
+	return StripANSI(string(data))
 }
 
 // GitInfo holds git repository metadata for a session.
@@ -423,8 +278,10 @@ func DetectSessionGitInfoFull(sessionName string) GitInfo {
 // KillSession kills a tmux session by name and optionally cleans up an associated git worktree.
 // gitPath is the main repo path used with -C so git commands run in the correct repo.
 func KillSession(name string, cleanupWorktree bool, worktreePath, branch, gitPath string) error {
-	if err := tmuxpkg.KillSession(name); err != nil {
-		return fmt.Errorf("kill session %q: %w", name, err)
+	if tmuxpkg.SessionExists(name) {
+		if err := tmuxpkg.KillSession(name); err != nil {
+			return fmt.Errorf("kill session %q: %w", name, err)
+		}
 	}
 
 	if cleanupWorktree && worktreePath != "" {
@@ -484,37 +341,20 @@ func CreateSession(name, dir, leftCmd, rightCmd string) error {
 	return tmuxpkg.CreateTwoPaneSession(name, dir, leftCmd, rightCmd)
 }
 
-// SendToPane sends text (followed by Enter) to a specific pane in a session.
-func SendToPane(session string, pane int, text string) error {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	return tmuxpkg.SendKeys(target, text)
+// InterruptPane sends Ctrl-C to a running agent without deleting its session or
+// workspace.
+func InterruptPane(session string, pane tmuxpkg.Pane) error {
+	target := paneTarget(session, pane)
+	cmd := exec.Command("tmux", "send-keys", "-t", target, "C-c")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("interrupt agent pane: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
-// AnswerPaneFreeText navigates an interactive AskUserQuestion prompt to "Other",
-// selects it, then types the given text.
-func AnswerPaneFreeText(session string, pane int, optionCount int, text string) error {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	return tmuxpkg.AnswerPromptFreeText(target, optionCount, text)
-}
-
-// TmuxRunning returns true if the tmux server is running (has at least one session).
-func TmuxRunning() bool {
-	cmd := exec.Command("tmux", "list-sessions")
-	return cmd.Run() == nil
-}
-
-// GhAvailable returns true if the GitHub CLI (gh) is on $PATH.
-func GhAvailable() bool {
-	_, err := exec.LookPath("gh")
-	return err == nil
-}
-
-// sessionsWrapper is used for JSON marshalling with a top-level key.
-type sessionsWrapper struct {
-	Sessions []Session `json:"sessions"`
-}
-
-// MarshalSessions serializes sessions to JSON with a {"sessions": [...]} envelope.
-func MarshalSessions(sessions []Session) ([]byte, error) {
-	return json.Marshal(sessionsWrapper{Sessions: sessions})
+func paneTarget(session string, pane tmuxpkg.Pane) string {
+	if pane.ID != "" {
+		return pane.ID
+	}
+	return fmt.Sprintf("%s:0.%d", session, pane.Index)
 }

@@ -20,7 +20,7 @@ var configCmd = &cobra.Command{
 		}
 
 		configPath := config.ConfigPath()
-		
+
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
 			if err := config.Save(cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating config file: %v\n", err)

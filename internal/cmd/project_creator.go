@@ -17,6 +17,7 @@ type projectCreatorConfig struct {
 	Placeholder   string
 	BasePath      string
 	SessionPrefix string
+	AgentCommand  string
 }
 
 type creatorModel struct {
@@ -95,8 +96,15 @@ func runProjectCreator(cfg projectCreatorConfig) {
 	sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", cfg.SessionPrefix, fm.projectName))
 
 	if !tmuxpkg.SessionExists(sessionName) {
-		tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, "nvim", "")
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, cfg.AgentCommand, ""); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+			return
+		}
+	} else {
+		fmt.Printf("Using existing tmux session %s\n", sessionName)
 	}
 
-	tmuxpkg.AttachOrSwitch(sessionName)
+	if err := tmuxpkg.AttachOrSwitch(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
+	}
 }
