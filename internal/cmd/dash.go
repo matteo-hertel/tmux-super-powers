@@ -25,8 +25,9 @@ var dashCmd = &cobra.Command{
 	Long: `Manage local Claude Code, Codex, and other terminal agents.
 
 The dashboard takes an on-demand snapshot instead of polling agent output or CI.
-Browse every tmux session, spawn agents, delegate follow-up work to inexpensive
-child panes, attach, stop a process, or remove a managed worktree from one place.`,
+Browse every tmux session, open configured projects, spawn agents, delegate
+follow-up work to inexpensive child panes, attach, stop a process, or remove a
+managed worktree from one place.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !tmuxpkg.IsInsideTmux() {
 			fmt.Fprintln(os.Stderr, "Error: dash must be run inside a tmux session")
@@ -70,6 +71,16 @@ child panes, attach, stop a process, or remove a managed worktree from one place
 				if err := tmuxpkg.SelectPane(final.attachSession, final.attachPane); err != nil {
 					fmt.Fprintf(os.Stderr, "Error selecting tmux pane: %v\n", err)
 				}
+			}
+		}
+		if final, ok := finalModel.(agentDashboardModel); ok && final.openDirectory != "" {
+			sessionName, _, openErr := ensureDirectorySession(final.openDirectory, cfg.Spawn.AgentCommand)
+			if openErr != nil {
+				fmt.Fprintf(os.Stderr, "Error opening directory: %v\n", openErr)
+				return
+			}
+			if openErr := tmuxpkg.AttachOrSwitch(sessionName); openErr != nil {
+				fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", openErr)
 			}
 		}
 	},
@@ -321,6 +332,7 @@ type agentDashboardMode int
 
 const (
 	dashAgentsBrowse agentDashboardMode = iota
+	dashAgentsOpenDirectory
 	dashAgentsSpawn
 	dashAgentsDelegate
 	dashAgentsConfirmStop
@@ -337,25 +349,31 @@ const (
 )
 
 type agentDashboardModel struct {
-	agents        []agentEntry
-	cursor        int
-	width         int
-	height        int
-	cfg           *config.Config
-	registry      *service.AgentRunRegistry
-	cwd           string
-	mode          agentDashboardMode
-	taskInput     textinput.Model
-	pathInput     textinput.Model
-	modelInput    textinput.Model
-	baseInput     textinput.Model
-	focusedInput  int
-	managerAgent  string
-	spawnAgent    string
-	busy          bool
-	statusMessage string
-	attachSession string
-	attachPane    tmuxpkg.Pane
+	agents              []agentEntry
+	cursor              int
+	width               int
+	height              int
+	cfg                 *config.Config
+	registry            *service.AgentRunRegistry
+	cwd                 string
+	mode                agentDashboardMode
+	taskInput           textinput.Model
+	pathInput           textinput.Model
+	modelInput          textinput.Model
+	baseInput           textinput.Model
+	directoryInput      textinput.Model
+	focusedInput        int
+	managerAgent        string
+	spawnAgent          string
+	busy                bool
+	statusMessage       string
+	attachSession       string
+	attachPane          tmuxpkg.Pane
+	directories         []string
+	filteredDirectories []string
+	directoryCursor     int
+	directoryError      string
+	openDirectory       string
 }
 
 type agentsRefreshedMsg struct {
@@ -388,6 +406,10 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 	baseInput.Placeholder = "Current branch"
 	baseInput.CharLimit = 200
 	baseInput.Width = 36
+	directoryInput := textinput.New()
+	directoryInput.Placeholder = "Filter configured projects"
+	directoryInput.CharLimit = 500
+	directoryInput.Width = 72
 
 	managerAgent := config.AgentClaude
 	if cfg != nil && cfg.Manager.DefaultAgent != "" {
@@ -396,15 +418,16 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 	}
 
 	return agentDashboardModel{
-		agents:       agents,
-		cfg:          cfg,
-		registry:     registry,
-		cwd:          cwd,
-		taskInput:    taskInput,
-		pathInput:    pathInput,
-		modelInput:   modelInput,
-		baseInput:    baseInput,
-		managerAgent: managerAgent,
+		agents:         agents,
+		cfg:            cfg,
+		registry:       registry,
+		cwd:            cwd,
+		taskInput:      taskInput,
+		pathInput:      pathInput,
+		modelInput:     modelInput,
+		baseInput:      baseInput,
+		directoryInput: directoryInput,
+		managerAgent:   managerAgent,
 	}
 }
 
@@ -491,6 +514,8 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n":
 		m.openSpawn()
+	case "o":
+		m.openDirectoryPicker()
 	case "d":
 		selected, ok := m.selected()
 		if !ok {
@@ -526,6 +551,37 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
+	case dashAgentsOpenDirectory:
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			m.closeModal()
+			return m, nil
+		case "up":
+			m.moveDirectoryCursor(-1)
+			return m, nil
+		case "down":
+			m.moveDirectoryCursor(1)
+			return m, nil
+		case "home":
+			m.directoryCursor = 0
+			return m, nil
+		case "end":
+			m.directoryCursor = max(0, len(m.filteredDirectories)-1)
+			return m, nil
+		case "enter":
+			if path, ok := m.selectedDirectory(); ok {
+				m.openDirectory = path
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.directoryInput, cmd = m.directoryInput.Update(msg)
+		m.filterDirectories()
+		return m, cmd
+
 	case dashAgentsSpawn:
 		switch msg.String() {
 		case "esc":
@@ -708,6 +764,54 @@ func (m *agentDashboardModel) openSpawn() {
 	m.syncInputFocus()
 }
 
+func (m *agentDashboardModel) openDirectoryPicker() {
+	m.mode = dashAgentsOpenDirectory
+	m.directoryCursor = 0
+	m.directoryError = ""
+	m.openDirectory = ""
+	m.directoryInput.SetValue("")
+	m.directoryInput.Focus()
+	m.directories = nil
+	m.filteredDirectories = nil
+	if m.cfg == nil {
+		m.directoryError = "Configuration is unavailable."
+		return
+	}
+	directories, err := expandDirectories(m.cfg.Directories, m.cfg.IgnoreDirectories)
+	if err != nil {
+		m.directoryError = err.Error()
+		return
+	}
+	m.directories = directories
+	m.filteredDirectories = append([]string(nil), directories...)
+}
+
+func (m *agentDashboardModel) filterDirectories() {
+	query := strings.ToLower(strings.TrimSpace(m.directoryInput.Value()))
+	m.filteredDirectories = m.filteredDirectories[:0]
+	for _, path := range m.directories {
+		name := strings.ToLower(filepath.Base(path))
+		if query == "" || strings.Contains(name, query) || strings.Contains(strings.ToLower(path), query) {
+			m.filteredDirectories = append(m.filteredDirectories, path)
+		}
+	}
+	m.directoryCursor = 0
+}
+
+func (m *agentDashboardModel) moveDirectoryCursor(delta int) {
+	if len(m.filteredDirectories) == 0 {
+		return
+	}
+	m.directoryCursor = (m.directoryCursor + delta + len(m.filteredDirectories)) % len(m.filteredDirectories)
+}
+
+func (m agentDashboardModel) selectedDirectory() (string, bool) {
+	if m.directoryCursor < 0 || m.directoryCursor >= len(m.filteredDirectories) {
+		return "", false
+	}
+	return m.filteredDirectories[m.directoryCursor], true
+}
+
 func (m *agentDashboardModel) openDelegate() {
 	m.mode = dashAgentsDelegate
 	m.focusedInput = 0
@@ -797,6 +901,7 @@ func (m *agentDashboardModel) closeModal() {
 	m.pathInput.Blur()
 	m.modelInput.Blur()
 	m.baseInput.Blur()
+	m.directoryInput.Blur()
 	m.statusMessage = ""
 }
 
@@ -1033,6 +1138,8 @@ func (m agentDashboardModel) View() string {
 	}
 	var view string
 	switch m.mode {
+	case dashAgentsOpenDirectory:
+		view = m.renderDirectoryPicker()
 	case dashAgentsSpawn:
 		view = m.renderSpawn()
 	case dashAgentsDelegate:
@@ -1085,9 +1192,9 @@ func (m agentDashboardModel) renderDashboard() string {
 		)
 	}
 
-	footerText := "n new   d delegate   enter attach   s stop   x clean   r refresh   ? help   q quit"
+	footerText := "o open   n new   d delegate   enter attach   s stop   x clean   r refresh   ? help   q quit"
 	if m.width < 86 {
-		footerText = "n new  d delegate  enter attach  s stop  x clean  r refresh  ? help  q quit"
+		footerText = "o open  n new  d delegate  ↵ attach  s stop  x clean  r refresh  ? help  q quit"
 	}
 	if m.busy {
 		footerText = "◌ " + m.statusMessage
@@ -1114,6 +1221,7 @@ func (m agentDashboardModel) renderEmpty(height int) string {
 		dashTitleStyle.Render("No tmux sessions or retained agents"),
 		dashMetaStyle.Render("Spawn an agent here or create a tmux session, then refresh the snapshot."),
 		"",
+		dashKeyStyle.Render("o") + dashMetaStyle.Render("  open project"),
 		dashKeyStyle.Render("n") + dashMetaStyle.Render("  new agent"),
 	}
 	return lipgloss.NewStyle().Width(max(1, m.width-2)).Height(height).PaddingLeft(2).Render(strings.Join(lines, "\n"))
@@ -1282,6 +1390,74 @@ func nonEmptyTail(text string, limit int) []string {
 	return lines
 }
 
+func (m agentDashboardModel) renderDirectoryPicker() string {
+	contentWidth := min(max(24, m.width-16), 76)
+	compact := m.height < 18
+	lines := []string{dashTitleStyle.Render("Open a project")}
+	if !compact {
+		lines = append(lines,
+			dashMetaStyle.Render("Configured directories open in their existing session or a new 80/20 session."),
+			"",
+		)
+	}
+	m.directoryInput.Width = max(12, contentWidth-2)
+	lines = append(lines,
+		lipgloss.NewStyle().Foreground(dashFaint).Render("FILTER"),
+		m.directoryInput.View(),
+		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("PROJECTS"),
+	)
+	footerRows := 2
+	if compact {
+		footerRows = 1
+	}
+	visibleRows := max(1, min(10, m.height-6-len(lines)-footerRows))
+	start := 0
+	if m.directoryCursor >= visibleRows {
+		start = m.directoryCursor - visibleRows + 1
+	}
+	end := min(len(m.filteredDirectories), start+visibleRows)
+	heading := fmt.Sprintf("PROJECTS  %d", len(m.filteredDirectories))
+	if len(m.filteredDirectories) > visibleRows {
+		heading = fmt.Sprintf("PROJECTS  %d–%d / %d", start+1, end, len(m.filteredDirectories))
+	}
+	lines[len(lines)-1] = lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render(heading)
+	if m.directoryError != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(dashDanger).Render(m.directoryError))
+	} else if len(m.filteredDirectories) == 0 {
+		empty := "No configured directories."
+		if strings.TrimSpace(m.directoryInput.Value()) != "" {
+			empty = "No projects match this filter."
+		}
+		lines = append(lines, dashMetaStyle.Render(empty))
+	} else {
+		for index := start; index < end; index++ {
+			path := m.filteredDirectories[index]
+			marker := "  "
+			if index == m.directoryCursor {
+				marker = "› "
+			}
+			name := filepath.Base(path)
+			name = ansi.Truncate(name, max(8, contentWidth/2), "…")
+			pathWidth := max(4, contentWidth-lipgloss.Width(name)-4)
+			row := marker + dashTitleStyle.Render(name) + "  " + dashMetaStyle.Render(ansi.Truncate(path, pathWidth, "…"))
+			style := lipgloss.NewStyle().Width(contentWidth)
+			if index == m.directoryCursor {
+				style = style.Background(dashSelected)
+			}
+			lines = append(lines, style.Render(row))
+		}
+	}
+	footer := dashKeyStyle.Render("↑ / ↓") + " choose   " + dashKeyStyle.Render("enter") + " open   " + dashKeyStyle.Render("esc") + " cancel"
+	if contentWidth < 38 {
+		footer = dashKeyStyle.Render("↑↓") + "  " + dashKeyStyle.Render("enter") + " open  " + dashKeyStyle.Render("esc") + " back"
+	}
+	if !compact {
+		lines = append(lines, "")
+	}
+	lines = append(lines, footer)
+	return m.renderModalFrame(lines)
+}
+
 func (m agentDashboardModel) renderSpawn() string {
 	command := "agent"
 	if m.spawnAgentCommand() != "" {
@@ -1384,6 +1560,7 @@ func (m agentDashboardModel) renderHelp() string {
 		dashTitleStyle.Render("Session and agent manager"),
 		dashMetaStyle.Render("Browse tmux sessions, manage durable workspaces, and delegate follow-up jobs."),
 		"",
+		"  " + dashKeyStyle.Render("o") + "          Open a configured directory",
 		"  " + dashKeyStyle.Render("n") + "          Spawn an agent in a project",
 		"  " + dashKeyStyle.Render("d") + "          Delegate work or request a lifecycle action",
 		"  " + dashKeyStyle.Render("enter") + "      Attach to the tmux session",

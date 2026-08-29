@@ -421,13 +421,12 @@ func openSelectedDirs(fm dirModel, agentCommand string) {
 
 	firstSession := ""
 	for _, path := range paths {
-		sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
-		if !tmuxpkg.SessionExists(sessionName) {
-			if err := createSession(sessionName, path, agentCommand); err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating tmux session %s: %v\n", sessionName, err)
-				continue
-			}
-		} else {
+		sessionName, created, err := ensureDirectorySession(path, agentCommand)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating tmux session %s: %v\n", sessionName, err)
+			continue
+		}
+		if !created {
 			fmt.Printf("Using existing tmux session %s\n", sessionName)
 		}
 		if firstSession == "" {
@@ -444,4 +443,12 @@ func openSelectedDirs(fm dirModel, agentCommand string) {
 
 func createSession(sessionName, dir, agentCommand string) error {
 	return tmuxpkg.CreateTwoPaneSession(sessionName, dir, agentCommand, "")
+}
+
+func ensureDirectorySession(path, agentCommand string) (string, bool, error) {
+	sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
+	if tmuxpkg.SessionExists(sessionName) {
+		return sessionName, false, nil
+	}
+	return sessionName, true, createSession(sessionName, path, agentCommand)
 }

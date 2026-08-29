@@ -10,7 +10,7 @@ device pairing, CI watcher, or background polling.
 
 The product loop is:
 
-1. Find or create a project with `tsp dir` / `tsp project`.
+1. Find or create a project with `tsp dir`, dashboard Open, or `tsp project`.
 2. Spawn isolated coding agents with `tsp spawn`.
 3. Delegate follow-up jobs from the on-demand `tsp dash` roster.
 4. Attach, interrupt, or clean parent/child tmux and worktree resources explicitly.
@@ -49,7 +49,7 @@ refresh/action.
 | `tsp project` | Create a project and tmux session. |
 | `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Browse sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
+| `tsp dash` | Open projects; browse sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
 | `tsp rm` | Remove sessions with worktree awareness. |
 | `tsp cleanup` | Remove orphaned worktree-base entries. |
 | `tsp wtx-new` | Create manual worktree sessions. |
@@ -96,6 +96,8 @@ Do not start a local server; the project has no server runtime.
 ## Gotchas
 
 - `tsp dash` must run inside tmux because `Enter` switches the active client.
+- Dashboard Open must reuse `expandDirectories` and `ensureDirectorySession`.
+  Do not add a second directory discovery or session launch path.
 - Every session launcher uses the `twosplit` shape: the configured primary
   agent in pane 0 at 80%, and an empty shell in pane 1 at 20%.
 - `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI

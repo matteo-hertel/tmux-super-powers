@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -242,6 +244,136 @@ func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
 	}
 	if !got.taskInput.Focused() {
 		t.Fatal("task input should be focused")
+	}
+}
+
+func TestAgentDashboardOpensConfiguredDirectoryPicker(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "alpha")
+	beta := filepath.Join(root, "beta")
+	for _, path := range []string{alpha, beta} {
+		if err := os.Mkdir(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := newAgentDashboardModel(nil, &config.Config{Directories: []string{alpha, beta}}, nil, root)
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd != nil {
+		t.Fatal("opening the directory picker returned an unexpected command")
+	}
+	got := next.(agentDashboardModel)
+	if got.mode != dashAgentsOpenDirectory {
+		t.Fatalf("mode = %v, want dashAgentsOpenDirectory", got.mode)
+	}
+	if !got.directoryInput.Focused() {
+		t.Fatal("directory filter should be focused")
+	}
+	if len(got.filteredDirectories) != 2 {
+		t.Fatalf("directory count = %d, want 2", len(got.filteredDirectories))
+	}
+}
+
+func TestAgentDashboardFiltersAndChoosesDirectory(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "alpha")
+	beta := filepath.Join(root, "beta")
+	for _, path := range []string{alpha, beta} {
+		if err := os.Mkdir(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := newAgentDashboardModel(nil, &config.Config{Directories: []string{alpha, beta}}, nil, root)
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	got := next.(agentDashboardModel)
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
+	got = next.(agentDashboardModel)
+	if len(got.filteredDirectories) != 1 || got.filteredDirectories[0] != beta {
+		t.Fatalf("filtered directories = %#v, want beta", got.filteredDirectories)
+	}
+	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(agentDashboardModel)
+	if cmd == nil {
+		t.Fatal("choosing a directory did not quit the dashboard")
+	}
+	if got.openDirectory != beta {
+		t.Fatalf("open directory = %q, want %q", got.openDirectory, beta)
+	}
+}
+
+func TestAgentDashboardDirectoryPickerMovesAndStaysBounded(t *testing.T) {
+	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
+	model.mode = dashAgentsOpenDirectory
+	model.width = 58
+	model.height = 14
+	model.directories = []string{"/repo/alpha", "/repo/beta", "/repo/gamma"}
+	model.filteredDirectories = append([]string(nil), model.directories...)
+	model.directoryInput.Focus()
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(agentDashboardModel)
+	if got.directoryCursor != 1 {
+		t.Fatalf("directory cursor = %d, want 1", got.directoryCursor)
+	}
+	view := got.View()
+	if !strings.Contains(view, "beta") {
+		t.Fatalf("selected directory missing from picker: %q", view)
+	}
+	if !strings.Contains(view, "enter") {
+		t.Fatalf("picker controls missing at compact height: %q", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) > got.height {
+		t.Fatalf("picker rendered %d lines for height %d", len(lines), got.height)
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width > got.width {
+			t.Fatalf("line %d width = %d, want <= %d", index, width, got.width)
+		}
+	}
+}
+
+func TestAgentDashboardShowsOpenShortcut(t *testing.T) {
+	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
+	model.width = 100
+	model.height = 20
+	view := model.View()
+	if !strings.Contains(view, "o open") {
+		t.Fatalf("dashboard footer is missing open shortcut: %q", view)
+	}
+	model.mode = dashAgentsHelp
+	if !strings.Contains(model.View(), "Open a configured directory") {
+		t.Fatal("dashboard help is missing the open shortcut")
+	}
+}
+
+func TestEnsureDirectorySessionCreatesThenReusesSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-open-test-%d", time.Now().UnixNano())
+	directory := filepath.Join(t.TempDir(), session)
+	if err := os.Mkdir(directory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(session)
+	})
+
+	name, created, err := ensureDirectorySession(directory, "sleep 5")
+	if err != nil {
+		t.Fatalf("ensureDirectorySession() error = %v", err)
+	}
+	if name != session || !created {
+		t.Fatalf("first open = (%q, %t), want (%q, true)", name, created, session)
+	}
+
+	name, created, err = ensureDirectorySession(directory, "sleep 5")
+	if err != nil {
+		t.Fatalf("ensureDirectorySession() reuse error = %v", err)
+	}
+	if name != session || created {
+		t.Fatalf("second open = (%q, %t), want (%q, false)", name, created, session)
 	}
 }
 

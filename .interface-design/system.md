@@ -72,6 +72,15 @@ Color communicates state or focus. Do not add decorative hues.
 - Delegated runs sit directly below their parent with two-column indentation.
 - The selected row uses `dashSelected`; unselected rows stay on the canvas.
 
+### Open project picker
+
+- Open it from the dashboard with `o` and focus the filter immediately.
+- Reuse the configured directory discovery and 80/20 session launcher from
+  `tsp dir`.
+- Show one project per row with its basename first and full path second.
+- Use the roster's mint marker and `dashSelected` surface for the active row.
+- Up and down choose, `Enter` opens, and `Esc` returns to the roster.
+
 ### Spawn form
 
 - Field order: Task, Project Path, Agent, Base Branch.

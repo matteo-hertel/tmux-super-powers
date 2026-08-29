@@ -61,6 +61,7 @@ never owns workspace deletion.
 
 | Key | Action |
 |---|---|
+| `o` | Open a configured project in its tmux session |
 | `n` | Spawn an agent in a project |
 | `d` | Delegate follow-up work to a child agent |
 | `Enter` | Attach to the selected tmux session and pane |
@@ -70,8 +71,9 @@ never owns workspace deletion.
 | `j` / `k` | Move through the roster |
 | `?` | Show help |
 
-Dashboard New lets you choose Claude or Codex and set the base branch before
-the worktree is created.
+Dashboard Open uses the directories configured for `tsp dir`. Dashboard New
+lets you choose Claude or Codex and set the base branch before the worktree is
+created.
 
 New sessions use the same layout as `twosplit`: the configured primary agent
 runs in the left 80% and an empty shell runs in the right 20%. `tsp` recognizes
