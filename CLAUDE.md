@@ -34,8 +34,9 @@ internal/tmux/tmux.go        Tmux command boundary
 internal/pathutil/           Path expansion and directory helpers
 ```
 
-The dashboard does not own a timer. It discovers processes and captures output
-once at startup and once per explicit refresh/action.
+The dashboard does not own a timer. It lists every live tmux session, discovers
+agent processes, and captures output once at startup and once per explicit
+refresh/action.
 
 ## CLI surface
 
@@ -45,7 +46,7 @@ once at startup and once per explicit refresh/action.
 | `tsp project` | Create a project and tmux session. |
 | `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Spawn, delegate, attach, interrupt, clean, and refresh agents. |
+| `tsp dash` | Browse sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
 | `tsp rm` | Remove sessions with worktree awareness. |
 | `tsp cleanup` | Remove orphaned worktree-base entries. |
 | `tsp wtx-new` | Create manual worktree sessions. |
@@ -91,13 +92,16 @@ Do not start a local server; the project has no server runtime.
 - `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI
   arguments. Keep quoting in `internal/service/spawn.go`; do not restore
   follow-up prompt injection with `tmux send-keys`.
-- Delegated runs share their parent's retained workspace and never own it.
-  Parent and child agents may run concurrently; surface their relationship
-  clearly, and let only the owning root run remove the worktree and branch.
+- Delegated runs open as new panes in their parent's tmux session. They share
+  the retained workspace and never own either resource. Parent and child agents
+  may run concurrently; let only the owning root run remove the worktree,
+  branch, and session.
 - Manager tasks with clear stop/cleanup intent route to native confirmed TSP
   actions. Do not let a delegated model delete its own workspace.
 - One-shot delegated agent panes use tmux `remain-on-exit`; discovery must skip
   dead panes as live processes while preserving their captured final output.
+- `tsp dir`, `tsp project`, and `tsp spawn` report the pane or agent commands
+  they launch. Keep those messages accurate when launch behavior changes.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a

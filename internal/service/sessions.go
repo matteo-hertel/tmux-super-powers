@@ -195,20 +195,6 @@ func IsPaneDead(session string, pane int) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
-// GetPaneCount returns the number of panes in a session's first window.
-func GetPaneCount(session string) int {
-	cmd := exec.Command("tmux", "list-panes", "-t", session, "-F", "#{pane_index}")
-	out, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	raw := strings.TrimSpace(string(out))
-	if raw == "" {
-		return 0
-	}
-	return len(strings.Split(raw, "\n"))
-}
-
 // CapturePaneContent captures the visible content of a pane.
 // Falls back to pane 0 if the requested pane fails.
 func CapturePaneContent(session string, pane int) string {

@@ -264,6 +264,28 @@ func TestAgentRunRegistryRequiresParentForDelegation(t *testing.T) {
 	}
 }
 
+func TestAgentRunRegistryTracksDelegatedPanesInParentSession(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	root, err := reg.RegisterManaged(SpawnResult{
+		Task: "root", Session: "shared-session", WorktreePath: "/work/shared",
+	}, AgentProviderCodex, 1, time.Now())
+	if err != nil {
+		t.Fatalf("RegisterManaged: %v", err)
+	}
+	child, err := reg.RegisterDelegated(SpawnResult{
+		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath,
+	}, AgentProviderClaude, root.ID, 2, time.Now())
+	if err != nil {
+		t.Fatalf("RegisterDelegated: %v", err)
+	}
+	if child.SessionName != root.SessionName || child.PaneIndex != 2 {
+		t.Fatalf("delegated target = %s:%d, want %s:2", child.SessionName, child.PaneIndex, root.SessionName)
+	}
+}
+
 func TestAgentRunRegistryDescendantsToleratesCycle(t *testing.T) {
 	reg, err := NewAgentRunRegistry("")
 	if err != nil {

@@ -244,9 +244,6 @@ func (r *AgentRunRegistry) RegisterDelegated(result SpawnResult, provider, paren
 	return run, r.saveLocked()
 }
 
-// Descendants returns every run delegated directly or indirectly from id,
-// children before parents. This order lets callers stop child sessions safely
-// before removing an owning workspace.
 func (r *AgentRunRegistry) Descendants(id string) []AgentRun {
 	if r == nil || id == "" {
 		return nil

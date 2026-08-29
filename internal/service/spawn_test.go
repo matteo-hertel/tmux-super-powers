@@ -1,9 +1,15 @@
 package service
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 )
 
 func TestTaskToBranch(t *testing.T) {
@@ -89,7 +95,7 @@ func TestTaskToBranchTruncation(t *testing.T) {
 }
 
 func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
-	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", "", "claude -p"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", 1, "", "", "claude -p"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty workspace")
 	}
 
@@ -97,11 +103,46 @@ func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "", "", "claude -p"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "parent", 1, "", "", "claude -p"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted a file as its workspace")
 	}
 
-	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "", "", ""); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "parent", 1, "", "", ""); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty manager command")
+	}
+}
+
+func TestBuildAgentCommandQuotesPrompt(t *testing.T) {
+	got := BuildAgentCommand("claude -p", "fix Matt's test")
+	want := "claude -p 'fix Matt'\\''s test'"
+	if got != want {
+		t.Fatalf("BuildAgentCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	sessionName := fmt.Sprintf("tsp-delegate-split-test-%d", time.Now().UnixNano())
+	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", t.TempDir())
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(sessionName)
+	})
+
+	result, err := SpawnDelegatedAgent(
+		"check CI", "check CI", t.TempDir(), sessionName, 99, "main", "", "sleep 30 #",
+	)
+	if err != nil {
+		t.Fatalf("SpawnDelegatedAgent: %v", err)
+	}
+	if result.Session != sessionName {
+		t.Fatalf("delegated session = %q, want %q", result.Session, sessionName)
+	}
+	if result.PaneIndex == 0 || !tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
+		t.Fatalf("delegated pane %d does not exist in parent session", result.PaneIndex)
 	}
 }

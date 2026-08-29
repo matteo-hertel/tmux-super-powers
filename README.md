@@ -48,9 +48,11 @@ Then open the manager from inside tmux:
 tsp dash
 ```
 
-The manager takes a snapshot only when it opens or when you press `r`; it does
-not poll pane output or CI. Delegation starts a new inexpensive child agent in
-the retained workspace instead of injecting keystrokes into the old process.
+The manager shows every live tmux session and marks sessions without an agent
+as idle. It takes a snapshot only when it opens or when you press `r`; it does
+not poll pane output or CI. Delegation starts a new inexpensive child pane in
+the selected session and retained workspace instead of injecting keystrokes
+into the old process.
 Natural-language lifecycle requests such as `delete this worktree` resolve to
 the same exact-target confirmation used by the native Clean control; the model
 never owns workspace deletion.
@@ -59,18 +61,21 @@ never owns workspace deletion.
 |---|---|
 | `n` | Spawn an agent in a project |
 | `d` | Delegate follow-up work to a child agent |
-| `Enter` | Attach to the agent's tmux session |
+| `Enter` | Attach to the selected tmux session and pane |
 | `s` | Interrupt the agent process with `Ctrl-C` |
 | `x` | Remove the session and its managed worktree/branch |
 | `r` | Refresh the agent and output snapshot |
 | `j` / `k` | Move through the roster |
 | `?` | Show help |
 
-`tsp` recognizes Claude Code, Codex, and Aider processes. Agents created by
+`tsp dir` and `tsp project` print the commands assigned to their new tmux panes.
+`tsp spawn` prints the full agent command for each task. `tsp` recognizes Claude
+Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
 available for delegation and deliberate cleanup. Delegated children appear
 directly beneath their parent and may run concurrently in the same retained
-workspace; only the owning root run can remove its worktree and branch.
+workspace and tmux session; only the owning root run can remove its worktree,
+branch, and session.
 
 ## Manual worktrees
 

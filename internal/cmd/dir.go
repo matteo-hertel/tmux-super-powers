@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -416,19 +417,32 @@ func openSelectedDirs(fm dirModel) {
 	for path := range fm.selectedPaths {
 		paths = append(paths, path)
 	}
+	sort.Strings(paths)
 
+	firstSession := ""
 	for _, path := range paths {
 		sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(path))
 		if !tmuxpkg.SessionExists(sessionName) {
-			createSession(sessionName, path)
+			if err := createSession(sessionName, path); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating tmux session %s: %v\n", sessionName, err)
+				continue
+			}
+		} else {
+			fmt.Printf("Using existing tmux session %s\n", sessionName)
+		}
+		if firstSession == "" {
+			firstSession = sessionName
 		}
 	}
 
-	// Switch/attach to the first created session
-	sessionName := tmuxpkg.SanitizeSessionName(filepath.Base(paths[0]))
-	tmuxpkg.AttachOrSwitch(sessionName)
+	if firstSession != "" {
+		if err := tmuxpkg.AttachOrSwitch(firstSession); err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
+		}
+	}
 }
 
-func createSession(sessionName, dir string) {
-	tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", "")
+func createSession(sessionName, dir string) error {
+	fmt.Print(sessionLaunchSummary(sessionName, "nvim", ""))
+	return tmuxpkg.CreateTwoPaneSession(sessionName, dir, "nvim", "")
 }

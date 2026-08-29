@@ -135,3 +135,19 @@ func TestBuildKeepPaneAfterExitArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSplitPaneArgsTargetsParentPane(t *testing.T) {
+	args := BuildSplitPaneArgs("project-task:0.1", "/work/project-task", "claude -p 'check CI'")
+	expected := []string{
+		"split-window", "-v", "-P", "-F", "#{pane_index}",
+		"-t", "project-task:0.1", "-c", "/work/project-task", "claude -p 'check CI'",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("BuildSplitPaneArgs length = %d, want %d", len(args), len(expected))
+	}
+	for i, arg := range args {
+		if arg != expected[i] {
+			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
+		}
+	}
+}

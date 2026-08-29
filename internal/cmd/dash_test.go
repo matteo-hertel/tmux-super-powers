@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,90 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	}
 }
 
+func TestAgentDashboardCountsIdleTmuxSessions(t *testing.T) {
+	entries := []agentEntry{
+		{
+			run:  service.AgentRun{ID: "run-agent", SessionName: "agent-session", PaneIndex: 1},
+			live: true, sessionExists: true,
+		},
+		{
+			run:  service.AgentRun{ID: "run-child", SessionName: "agent-session", PaneIndex: 2},
+			live: true, sessionExists: true,
+		},
+		{
+			run:           service.AgentRun{ID: "run-idle", SessionName: "idle-session", PaneIndex: 0},
+			sessionExists: true, sessionOnly: true,
+		},
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	model.width = 100
+	model.height = 20
+
+	if got := model.sessionCount(); got != 2 {
+		t.Fatalf("sessionCount() = %d, want 2", got)
+	}
+	if entries[2].status() != "idle" || entries[2].provider() != "session" {
+		t.Fatalf("idle entry = %s/%s, want idle/session", entries[2].status(), entries[2].provider())
+	}
+	view := model.View()
+	if !strings.Contains(view, "2 sessions · 2 active agents") {
+		t.Fatalf("dashboard header does not show session count: %q", view)
+	}
+}
+
+func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
+	var entries []agentEntry
+	for index := 0; index < 7; index++ {
+		entries = append(entries, agentEntry{
+			run: service.AgentRun{
+				ID:          fmt.Sprintf("run-%d", index),
+				SessionName: fmt.Sprintf("session-%d", index),
+			},
+			sessionExists: true,
+			sessionOnly:   true,
+		})
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	model.width = 80
+	model.height = 24
+	view := model.View()
+	if !strings.Contains(view, "session-0") || !strings.Contains(view, "session-6") {
+		t.Fatalf("compact roster did not show all seven sessions: %q", view)
+	}
+}
+
+func TestDiscoverAgentsIncludesIdleTmuxSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	sessionName := fmt.Sprintf("tsp-idle-discovery-test-%d", time.Now().UnixNano())
+	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", t.TempDir())
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	entries, err := discoverAgents(registry)
+	if err != nil {
+		t.Fatalf("discoverAgents: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.run.SessionName == sessionName {
+			if !entry.sessionOnly || entry.status() != "idle" {
+				t.Fatalf("idle session entry = %#v", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("idle tmux session %q was omitted", sessionName)
+}
+
 func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
 	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
 	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
@@ -90,6 +175,18 @@ func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
 	}
 	if !got.taskInput.Focused() {
 		t.Fatal("task input should be focused")
+	}
+}
+
+func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{{
+		run:           service.AgentRun{SessionName: "shared-session", PaneIndex: 3},
+		sessionExists: true,
+	}}, &config.Config{}, nil, "/repo")
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(agentDashboardModel)
+	if got.attachSession != "shared-session" || got.attachPane != 3 {
+		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane)
 	}
 }
 

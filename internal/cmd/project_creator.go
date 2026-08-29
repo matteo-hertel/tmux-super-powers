@@ -95,8 +95,31 @@ func runProjectCreator(cfg projectCreatorConfig) {
 	sessionName := tmuxpkg.SanitizeSessionName(fmt.Sprintf("%s-%s", cfg.SessionPrefix, fm.projectName))
 
 	if !tmuxpkg.SessionExists(sessionName) {
-		tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, "nvim", "")
+		fmt.Print(sessionLaunchSummary(sessionName, "nvim", ""))
+		if err := tmuxpkg.CreateTwoPaneSession(sessionName, projectPath, "nvim", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+			return
+		}
+	} else {
+		fmt.Printf("Using existing tmux session %s\n", sessionName)
 	}
 
-	tmuxpkg.AttachOrSwitch(sessionName)
+	if err := tmuxpkg.AttachOrSwitch(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
+	}
+}
+
+func sessionLaunchSummary(sessionName, leftCommand, rightCommand string) string {
+	if strings.TrimSpace(leftCommand) == "" {
+		leftCommand = "$SHELL"
+	}
+	if strings.TrimSpace(rightCommand) == "" {
+		rightCommand = "$SHELL"
+	}
+	return fmt.Sprintf(
+		"Starting tmux session %s\n  pane 0: %s\n  pane 1: %s\n",
+		sessionName,
+		leftCommand,
+		rightCommand,
+	)
 }
