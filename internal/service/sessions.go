@@ -83,8 +83,8 @@ func ListSessions() ([]string, error) {
 }
 
 // GetAgentPaneCwd returns the working directory of a specific pane.
-func GetAgentPaneCwd(session string, pane int) string {
-	return tmuxpkg.GetPaneCwdByIndex(session, pane)
+func GetAgentPaneCwd(session string, pane tmuxpkg.Pane) string {
+	return tmuxpkg.GetPaneCwdFor(session, pane)
 }
 
 // AgentProcessInfo describes the controllable agent process for a pane.
@@ -96,7 +96,7 @@ type AgentProcessInfo struct {
 
 // DetectPaneAgentProcess resolves the agent process for a tmux pane. It checks
 // the pane process first, then direct shell children for wrapped agent commands.
-func DetectPaneAgentProcess(session string, pane int, paneProcess string) AgentProcessInfo {
+func DetectPaneAgentProcess(session string, pane tmuxpkg.Pane, paneProcess string) AgentProcessInfo {
 	panePID := GetPanePID(session, pane)
 	provider := DetectAgentProvider(paneProcess)
 	if provider != AgentProviderFallback && panePID != 0 {
@@ -115,8 +115,8 @@ func DetectPaneAgentProcess(session string, pane int, paneProcess string) AgentP
 }
 
 // GetPanePID returns the root process ID for a tmux pane.
-func GetPanePID(session string, pane int) int {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func GetPanePID(session string, pane tmuxpkg.Pane) int {
+	target := paneTarget(session, pane)
 	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
 	pidOut, err := pidCmd.Output()
 	if err != nil {
@@ -160,24 +160,9 @@ func findAgentProcessInfo(shellPid string) AgentProcessInfo {
 	return AgentProcessInfo{}
 }
 
-// hasAgentChild checks if a shell pane has an agent (claude/aider/codex) as a child process.
-func hasAgentChild(session string, pane int) bool {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
-	pidCmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_pid}")
-	pidOut, err := pidCmd.Output()
-	if err != nil {
-		return false
-	}
-	panePid := strings.TrimSpace(string(pidOut))
-	if panePid == "" {
-		return false
-	}
-	return findAgentProcessInfo(panePid).Provider != ""
-}
-
 // GetPaneProcess returns the current command running in a specific pane.
-func GetPaneProcess(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func GetPaneProcess(session string, pane tmuxpkg.Pane) string {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_command}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -188,32 +173,20 @@ func GetPaneProcess(session string, pane int) string {
 
 // IsPaneDead reports whether tmux is retaining a pane whose command has
 // already exited.
-func IsPaneDead(session string, pane int) bool {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func IsPaneDead(session string, pane tmuxpkg.Pane) bool {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_dead}")
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
 // CapturePaneContent captures a pane and its tmux scrollback.
-// Falls back to pane 0 if the requested pane fails.
-func CapturePaneContent(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func CapturePaneContent(session string, pane tmuxpkg.Pane) string {
+	target := paneTarget(session, pane)
 	args := tmuxpkg.BuildCapturePaneArgs(target)
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		// Fall back to pane 0 if the requested pane failed.
-		if pane != 0 {
-			fallbackTarget := fmt.Sprintf("%s:0.0", session)
-			fallbackArgs := tmuxpkg.BuildCapturePaneArgs(fallbackTarget)
-			fallbackCmd := exec.Command("tmux", fallbackArgs...)
-			fallbackOut, fallbackErr := fallbackCmd.Output()
-			if fallbackErr != nil {
-				return ""
-			}
-			return StripANSI(string(fallbackOut))
-		}
 		return ""
 	}
 	return StripANSI(string(out))
@@ -370,11 +343,18 @@ func CreateSession(name, dir, leftCmd, rightCmd string) error {
 
 // InterruptPane sends Ctrl-C to a running agent without deleting its session or
 // workspace.
-func InterruptPane(session string, pane int) error {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func InterruptPane(session string, pane tmuxpkg.Pane) error {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "send-keys", "-t", target, "C-c")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("interrupt agent pane: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func paneTarget(session string, pane tmuxpkg.Pane) string {
+	if pane.ID != "" {
+		return pane.ID
+	}
+	return fmt.Sprintf("%s:0.%d", session, pane.Index)
 }

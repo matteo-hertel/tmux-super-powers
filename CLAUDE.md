@@ -109,6 +109,11 @@ Do not start a local server; the project has no server runtime.
   actions. Do not let a delegated model delete its own workspace.
 - A delegated command captures its bounded tmux scrollback before exiting, then
   its temporary pane closes. Keep the stored output until the run is cleaned.
+- Tmux pane indices move when panes open and close. Persist and target the
+  stable `#{pane_id}` for managed runs; keep the index only for display and
+  legacy registry entries.
+- Treat a stopped delegated row without a pane ID as output-only. Its old pane
+  index may now belong to a different process.
 - Pane snapshots use `capture-pane -S -`. Keep command output attached to the
   pane by passing `$SHELL -c` as explicit tmux command arguments.
 - A managed agent can outlive its process in the roster. This is intentional so

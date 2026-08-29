@@ -95,7 +95,7 @@ func TestTaskToBranchTruncation(t *testing.T) {
 }
 
 func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
-	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", 1, "", "", "claude -p", "haiku"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", "", "", tmuxpkg.Pane{Index: 1}, "", "", "claude -p", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty workspace")
 	}
 
@@ -103,11 +103,11 @@ func TestSpawnDelegatedAgentValidatesWorkspaceAndCommand(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "parent", 1, "", "", "claude -p", "haiku"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", filePath, "parent", tmuxpkg.Pane{Index: 1}, "", "", "claude -p", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted a file as its workspace")
 	}
 
-	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "parent", 1, "", "", "", "haiku"); err == nil {
+	if _, err := SpawnDelegatedAgent("task", "prompt", t.TempDir(), "parent", tmuxpkg.Pane{Index: 1}, "", "", "", "haiku"); err == nil {
 		t.Fatal("SpawnDelegatedAgent accepted an empty manager command")
 	}
 }
@@ -133,9 +133,8 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 		t.Skip("tmux is not installed")
 	}
 	sessionName := fmt.Sprintf("tsp-delegate-split-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", t.TempDir())
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	if err := tmuxpkg.CreateTwoPaneSession(sessionName, t.TempDir(), "sleep 5", ""); err != nil {
+		t.Fatalf("create tmux session: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = tmuxpkg.KillSession(sessionName)
@@ -144,7 +143,7 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 
 	result, err := SpawnDelegatedAgent(
-		"check CI", "check CI", t.TempDir(), sessionName, 99, "main", "",
+		"check CI", "check CI", t.TempDir(), sessionName, tmuxpkg.Pane{Index: 99}, "main", "",
 		"sh -c 'i=1; while [ $i -le 200 ]; do echo delegate-line-$i; i=$((i + 1)); done' placeholder", "",
 	)
 	if err != nil {
@@ -153,18 +152,21 @@ func TestSpawnDelegatedAgentSplitsParentSession(t *testing.T) {
 	if result.Session != sessionName {
 		t.Fatalf("delegated session = %q, want %q", result.Session, sessionName)
 	}
-	if result.PaneIndex == 0 {
-		t.Fatal("delegated pane reused the parent pane")
+	if result.PaneID == "" {
+		t.Fatal("delegated pane has no stable ID")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if !tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
+		if !tmuxpkg.PaneExists(sessionName, tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex}) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if tmuxpkg.PaneExists(sessionName, result.PaneIndex) {
+	if tmuxpkg.PaneExists(sessionName, tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex}) {
 		t.Fatal("delegated pane stayed open after the agent exited")
+	}
+	if !tmuxpkg.PaneExists(sessionName, tmuxpkg.Pane{Index: result.PaneIndex}) {
+		t.Fatal("expected the shell pane to reuse the delegated pane index")
 	}
 	output := ReadStoredAgentOutput(result.OutputPath)
 	if !strings.Contains(output, "delegate-line-1") || !strings.Contains(output, "delegate-line-200") {

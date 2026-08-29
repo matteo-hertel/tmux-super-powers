@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
+	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 )
 
 func TestAgentDashboardDoesNotPoll(t *testing.T) {
@@ -18,6 +19,72 @@ func TestAgentDashboardDoesNotPoll(t *testing.T) {
 	if cmd := model.Init(); cmd != nil {
 		t.Fatal("dashboard Init returned a command; snapshots must refresh only on demand")
 	}
+}
+
+func TestDiscoverAgentsReadsStoredOutputAfterDelegatedPaneCloses(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SHELL", "/bin/sh")
+	dir := t.TempDir()
+	session := fmt.Sprintf("tsp-dash-output-test-%d", time.Now().UnixNano())
+	if err := tmuxpkg.CreateTwoPaneSession(session, dir, "sleep 5", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(session)
+	})
+	panes := tmuxpkg.Panes(session)
+	if len(panes) != 2 {
+		t.Fatalf("pane count = %d, want 2", len(panes))
+	}
+	parentPane := panes[0]
+	for _, pane := range panes {
+		if pane.Index == 0 {
+			parentPane = pane
+		}
+	}
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := registry.RegisterManaged(service.SpawnResult{
+		Task: "root", Session: session, PaneIndex: parentPane.Index, PaneID: parentPane.ID, WorktreePath: dir,
+	}, service.AgentProviderCodex, parentPane.Index, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SpawnDelegatedAgent(
+		"child", "child", dir, session, parentPane, "main", "",
+		"sh -c 'printf delegate-finished' placeholder", "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := registry.RegisterDelegated(result, service.AgentProviderClaude, root.ID, result.PaneIndex, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPane := tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && tmuxpkg.PaneExists(session, childPane) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	agents, err := discoverAgents(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range agents {
+		if agent.run.ID == child.ID {
+			if !strings.Contains(agent.output, "delegate-finished") {
+				t.Fatalf("stored delegated output = %q", agent.output)
+			}
+			return
+		}
+	}
+	t.Fatalf("delegated run %q was not discovered", child.ID)
 }
 
 func TestAgentDashboardKeepsSelectionVisibleAndInsideTerminal(t *testing.T) {
@@ -216,8 +283,58 @@ func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
 	}}, &config.Config{}, nil, "/repo")
 	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(agentDashboardModel)
-	if got.attachSession != "shared-session" || got.attachPane != 3 {
-		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane)
+	if got.attachSession != "shared-session" || got.attachPane.Index != 3 {
+		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane.Index)
+	}
+}
+
+func TestAgentDashboardDoesNotSelectPaneForCompletedLegacyChild(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{{
+		run: service.AgentRun{
+			ID: "child", ParentRunID: "root", SessionName: "shared-session", PaneIndex: 1, Status: "stopped", Managed: true,
+		},
+		sessionExists: true,
+	}}, &config.Config{}, nil, "/repo")
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(agentDashboardModel)
+	if got.attachSession != "shared-session" || got.attachPane.Index != -1 {
+		t.Fatalf("completed child attach target = %s:%d", got.attachSession, got.attachPane.Index)
+	}
+}
+
+func TestRemoveDelegatedRunDoesNotKillPaneForStoppedLegacyChild(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-legacy-clean-test-%d", time.Now().UnixNano())
+	if err := tmuxpkg.CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(session)
+	})
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryRoot, err := registry.RegisterManaged(service.SpawnResult{Session: session}, service.AgentProviderCodex, 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := registry.RegisterDelegated(service.SpawnResult{Session: session}, service.AgentProviderClaude, registryRoot.ID, 1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkUnseenStopped(map[string]bool{registryRoot.ID: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ = registry.Find(legacy.ID)
+	if err := removeDelegatedRun(registry, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if len(tmuxpkg.Panes(session)) != 2 {
+		t.Fatal("legacy cleanup killed the pane that reused its index")
 	}
 }
 
@@ -373,6 +490,7 @@ func TestClassifyManagerTask(t *testing.T) {
 		{task: "make sure CI is green", want: managerIntentDelegate},
 		{task: "remove the dead code", want: managerIntentDelegate},
 		{task: "clean up the failing tests", want: managerIntentDelegate},
+		{task: "delete the stale feature branch after merging", want: managerIntentDelegate},
 		{task: "delete this worktree", want: managerIntentCleanup},
 		{task: "remove the agent workspace", want: managerIntentCleanup},
 		{task: "stop this agent", want: managerIntentStop},

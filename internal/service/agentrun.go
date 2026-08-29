@@ -27,6 +27,7 @@ type AgentRun struct {
 	Task         string    `json:"task,omitempty"`
 	SessionName  string    `json:"sessionName"`
 	PaneIndex    int       `json:"paneIndex"`
+	PaneID       string    `json:"paneId,omitempty"`
 	PID          int       `json:"pid,omitempty"`
 	CWD          string    `json:"cwd,omitempty"`
 	Branch       string    `json:"branch,omitempty"`
@@ -45,6 +46,7 @@ type ObservedAgentRun struct {
 	Provider    string
 	SessionName string
 	PaneIndex   int
+	PaneID      string
 	PID         int
 	CWD         string
 	Status      string
@@ -113,6 +115,9 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 	run.Provider = obs.Provider
 	run.SessionName = obs.SessionName
 	run.PaneIndex = obs.PaneIndex
+	if obs.PaneID != "" {
+		run.PaneID = obs.PaneID
+	}
 	run.PID = obs.PID
 	run.CWD = obs.CWD
 	run.Status = obs.Status
@@ -135,7 +140,20 @@ func normalizeObservedRun(obs ObservedAgentRun) ObservedAgentRun {
 func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 	var best AgentRun
 	for _, run := range r.runs {
-		if run.SessionName != obs.SessionName || run.PaneIndex != obs.PaneIndex {
+		if run.SessionName != obs.SessionName {
+			continue
+		}
+		if obs.PaneID != "" && run.PaneID == "" && run.Managed && run.Status == "stopped" {
+			continue
+		}
+		if obs.PaneID != "" && run.PaneID != "" {
+			if run.PaneID != obs.PaneID {
+				continue
+			}
+		} else if run.PaneIndex != obs.PaneIndex {
+			continue
+		}
+		if obs.Provider == AgentProviderFallback && run.Managed {
 			continue
 		}
 		if obs.PID != 0 && run.PID != 0 && run.PID != obs.PID {
@@ -170,7 +188,8 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 
 	var id string
 	for candidateID, run := range r.runs {
-		if run.SessionName == result.Session && run.PaneIndex == paneIndex && run.Managed {
+		samePane := result.PaneID == "" || run.PaneID == "" || run.PaneID == result.PaneID
+		if run.SessionName == result.Session && run.PaneIndex == paneIndex && run.ParentRunID == "" && run.Managed && samePane {
 			id = candidateID
 			break
 		}
@@ -188,6 +207,8 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 	run.Task = result.Task
 	run.SessionName = result.Session
 	run.PaneIndex = paneIndex
+	run.PaneID = result.PaneID
+	run.PID = 0
 	run.CWD = result.WorktreePath
 	run.Branch = result.Branch
 	run.WorktreePath = result.WorktreePath
@@ -231,6 +252,7 @@ func (r *AgentRunRegistry) RegisterDelegated(result SpawnResult, provider, paren
 		Task:         result.Task,
 		SessionName:  result.Session,
 		PaneIndex:    paneIndex,
+		PaneID:       result.PaneID,
 		CWD:          result.WorktreePath,
 		Branch:       result.Branch,
 		WorktreePath: result.WorktreePath,
@@ -313,6 +335,11 @@ func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time
 	changed := false
 	for id, run := range r.runs {
 		if seen[id] {
+			continue
+		}
+		if !run.Managed {
+			delete(r.runs, id)
+			changed = true
 			continue
 		}
 		if run.Status == "stopped" {

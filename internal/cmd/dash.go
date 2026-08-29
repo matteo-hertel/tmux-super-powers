@@ -66,8 +66,10 @@ child panes, attach, stop a process, or remove a managed worktree from one place
 				fmt.Fprintf(os.Stderr, "Error opening tmux session: %v\n", err)
 				return
 			}
-			if err := tmuxpkg.SelectPane(final.attachSession, final.attachPane); err != nil {
-				fmt.Fprintf(os.Stderr, "Error selecting tmux pane: %v\n", err)
+			if final.attachPane.ID != "" || final.attachPane.Index >= 0 {
+				if err := tmuxpkg.SelectPane(final.attachSession, final.attachPane); err != nil {
+					fmt.Fprintf(os.Stderr, "Error selecting tmux pane: %v\n", err)
+				}
 			}
 		}
 	},
@@ -122,6 +124,10 @@ func (a agentEntry) ownsWorkspace() bool {
 	return a.run.Managed && a.run.ParentRunID == "" && a.worktreePath != ""
 }
 
+func runPane(run service.AgentRun) tmuxpkg.Pane {
+	return tmuxpkg.Pane{ID: run.PaneID, Index: run.PaneIndex}
+}
+
 func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 	sessionNames, err := service.ListSessions()
 	if err != nil {
@@ -135,10 +141,10 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 	for _, sessionName := range sessionNames {
 		sessionSet[sessionName] = true
 		gitInfo := service.DetectSessionGitInfoFull(sessionName)
-		paneIndices := tmuxpkg.PaneIndices(sessionName)
-		var activePanes []int
+		panes := tmuxpkg.Panes(sessionName)
+		var activePanes []tmuxpkg.Pane
 		agentFound := false
-		for _, pane := range paneIndices {
+		for _, pane := range panes {
 			if service.IsPaneDead(sessionName, pane) {
 				continue
 			}
@@ -164,7 +170,8 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 			run, upsertErr := registry.UpsertObserved(service.ObservedAgentRun{
 				Provider:    provider,
 				SessionName: sessionName,
-				PaneIndex:   pane,
+				PaneIndex:   pane.Index,
+				PaneID:      pane.ID,
 				PID:         processInfo.PID,
 				CWD:         cwd,
 				Status:      "running",
@@ -195,7 +202,8 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 			run, upsertErr := registry.UpsertObserved(service.ObservedAgentRun{
 				Provider:    service.AgentProviderFallback,
 				SessionName: sessionName,
-				PaneIndex:   pane,
+				PaneIndex:   pane.Index,
+				PaneID:      pane.ID,
 				PID:         service.GetPanePID(sessionName, pane),
 				CWD:         cwd,
 				Status:      "idle",
@@ -233,8 +241,10 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 			gitPath:       run.GitPath,
 			sessionExists: sessionSet[run.SessionName],
 		}
-		if entry.sessionExists && tmuxpkg.PaneExists(run.SessionName, run.PaneIndex) {
-			entry.output = service.CapturePaneContent(run.SessionName, run.PaneIndex)
+		if run.Status == "stopped" && run.OutputPath != "" {
+			entry.output = service.ReadStoredAgentOutput(run.OutputPath)
+		} else if entry.sessionExists && tmuxpkg.PaneExists(run.SessionName, runPane(run)) {
+			entry.output = service.CapturePaneContent(run.SessionName, runPane(run))
 		} else {
 			entry.output = service.ReadStoredAgentOutput(run.OutputPath)
 		}
@@ -345,7 +355,7 @@ type agentDashboardModel struct {
 	busy          bool
 	statusMessage string
 	attachSession string
-	attachPane    int
+	attachPane    tmuxpkg.Pane
 }
 
 type agentsRefreshedMsg struct {
@@ -473,7 +483,10 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if selected, ok := m.selected(); ok && selected.sessionExists {
 			m.attachSession = selected.run.SessionName
-			m.attachPane = selected.run.PaneIndex
+			m.attachPane = runPane(selected.run)
+			if selected.run.ParentRunID != "" && !selected.live {
+				m.attachPane = tmuxpkg.Pane{Index: -1}
+			}
 			return m, tea.Quit
 		}
 	case "n":
@@ -655,7 +668,7 @@ func classifyManagerTask(task string) managerTaskIntent {
 		}
 		return false
 	}
-	if has("delete", "remove", "discard", "clean", "cleanup") && has("worktree", "workspace", "branch", "run", "agent") {
+	if has("delete", "remove", "discard", "clean", "cleanup") && has("worktree", "workspace", "run", "agent") {
 		return managerIntentCleanup
 	}
 	if has("stop", "interrupt", "kill") && has("run", "agent", "process") {
@@ -872,7 +885,7 @@ func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, pa
 			prompt,
 			workspace,
 			parent.run.SessionName,
-			parent.run.PaneIndex,
+			runPane(parent.run),
 			parent.branch,
 			parent.gitPath,
 			agentConfig.Command,
@@ -882,7 +895,7 @@ func delegateAgentCmd(cfg *config.Config, registry *service.AgentRunRegistry, pa
 		if err == nil {
 			registered, registerErr := registry.RegisterDelegated(result, managerAgent, parent.run.ID, result.PaneIndex, time.Now().UTC())
 			if registerErr != nil {
-				_ = tmuxpkg.KillPane(result.Session, result.PaneIndex)
+				_ = tmuxpkg.KillPane(result.Session, tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex})
 				_ = os.Remove(result.OutputPath)
 				err = registerErr
 			} else {
@@ -935,7 +948,7 @@ Safety boundary: do not delete, move, or unregister the target worktree or branc
 
 func stopAgentCmd(registry *service.AgentRunRegistry, agent agentEntry) tea.Cmd {
 	return func() tea.Msg {
-		err := service.InterruptPane(agent.run.SessionName, agent.run.PaneIndex)
+		err := service.InterruptPane(agent.run.SessionName, runPane(agent.run))
 		agents, refreshErr := discoverAgents(registry)
 		if err == nil {
 			err = refreshErr
@@ -987,7 +1000,9 @@ func removeDelegatedRun(registry *service.AgentRunRegistry, run service.AgentRun
 	sharedSession := parentExists && parent.SessionName == run.SessionName
 	var err error
 	if sharedSession {
-		err = tmuxpkg.KillPane(run.SessionName, run.PaneIndex)
+		if run.PaneID != "" || run.Status != "stopped" {
+			err = tmuxpkg.KillPane(run.SessionName, runPane(run))
+		}
 	} else {
 		err = service.KillSession(run.SessionName, false, "", "", "")
 	}

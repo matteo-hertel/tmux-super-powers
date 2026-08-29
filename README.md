@@ -133,8 +133,8 @@ commands power the provider switch in dashboard New. The `manager` section
 controls delegated agents and their default models. The delegation panel can
 override the manager agent and model for one run.
 
-Use `tsp config repair` to fill missing active settings. Old `dash`, `serve`,
-`watcher`, and `sandbox` keys are safely ignored by the YAML loader.
+Old `dash`, `serve`, `watcher`, and `sandbox` keys are safely ignored by the
+YAML loader.
 
 ## Requirements
 

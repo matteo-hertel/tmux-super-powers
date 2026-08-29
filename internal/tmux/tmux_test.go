@@ -146,7 +146,7 @@ func TestBuildSplitPaneArgsTargetsParentPane(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	args := BuildSplitPaneArgs("project-task:0.1", "/work/project-task", "claude -p 'check CI'")
 	expected := []string{
-		"split-window", "-v", "-P", "-F", "#{pane_index}",
+		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
 		"-t", "project-task:0.1", "-c", "/work/project-task", "/bin/sh", "-c", "claude -p 'check CI'",
 	}
 	if len(args) != len(expected) {
@@ -156,6 +156,39 @@ func TestBuildSplitPaneArgsTargetsParentPane(t *testing.T) {
 		if arg != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
 		}
+	}
+}
+
+func TestSplitPaneUsesStableIDAfterPaneIndicesMove(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-pane-id-test-%d", time.Now().UnixNano())
+	if err := CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
+		t.Fatalf("CreateTwoPaneSession() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillSession(session)
+	})
+
+	delegated, err := SplitPane(session, Pane{Index: 0}, t.TempDir(), "printf 'done\\n'")
+	if err != nil {
+		t.Fatalf("SplitPane() error = %v", err)
+	}
+	if delegated.ID == "" {
+		t.Fatal("SplitPane() returned an empty pane ID")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && PaneExists(session, delegated) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if PaneExists(session, delegated) {
+		t.Fatal("completed pane still exists by stable ID")
+	}
+	if !PaneExists(session, Pane{Index: delegated.Index}) {
+		t.Fatal("expected the shell pane to reuse the completed pane index")
 	}
 }
 

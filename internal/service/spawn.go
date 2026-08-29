@@ -67,6 +67,7 @@ type SpawnResult struct {
 	Branch       string `json:"branch"`
 	Session      string `json:"session"`
 	PaneIndex    int    `json:"paneIndex"`
+	PaneID       string `json:"paneId,omitempty"`
 	Command      string `json:"command,omitempty"`
 	Status       string `json:"status"`
 	Error        string `json:"error,omitempty"`
@@ -79,7 +80,7 @@ type SpawnResult struct {
 // SpawnDelegatedAgent starts a short-lived agent in an existing workspace. It
 // deliberately creates no branch or worktree: the caller records the new run
 // as a child of the run that owns the workspace.
-func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, branch, gitPath, agentCommand, model string) (SpawnResult, error) {
+func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane tmuxpkg.Pane, branch, gitPath, agentCommand, model string) (SpawnResult, error) {
 	dir = pathutil.ExpandPath(strings.TrimSpace(dir))
 	result := SpawnResult{
 		Task:         task,
@@ -105,7 +106,7 @@ func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, bran
 	if strings.TrimSpace(session) == "" {
 		return result, fmt.Errorf("parent tmux session is required")
 	}
-	if parentPane < 0 {
+	if parentPane.ID == "" && parentPane.Index < 0 {
 		return result, fmt.Errorf("parent tmux pane is required")
 	}
 	if !tmuxpkg.SessionExists(session) {
@@ -113,11 +114,11 @@ func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, bran
 	}
 	targetPane := parentPane
 	if !tmuxpkg.PaneExists(session, targetPane) {
-		paneIndices := tmuxpkg.PaneIndices(session)
-		if len(paneIndices) == 0 {
+		panes := tmuxpkg.Panes(session)
+		if len(panes) == 0 {
 			return result, fmt.Errorf("parent tmux session %q has no panes", session)
 		}
-		targetPane = paneIndices[0]
+		targetPane = panes[0]
 	}
 
 	outputPath, err := createDelegatedOutputFile()
@@ -126,12 +127,13 @@ func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane int, bran
 	}
 	result.OutputPath = outputPath
 	result.Command = "(" + BuildManagerAgentCommand(agentCommand, model, prompt) + "); tsp_status=$?; tmux capture-pane -t \"$TMUX_PANE\" -p -e -S - > " + shellQuote(outputPath) + "; exit $tsp_status"
-	paneIndex, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
+	pane, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
 	if err != nil {
 		_ = os.Remove(outputPath)
 		return result, fmt.Errorf("delegated pane creation failed: %w", err)
 	}
-	result.PaneIndex = paneIndex
+	result.PaneIndex = pane.Index
+	result.PaneID = pane.ID
 	result.Status = "ok"
 	return result, nil
 }
@@ -233,6 +235,7 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			results = append(results, result)
 			continue
 		}
+		result.PaneID = paneIDAtIndex(sessionName, result.PaneIndex)
 
 		result.Status = "ok"
 		results = append(results, result)
@@ -278,6 +281,8 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, result.Command, ""); err != nil {
 			result.Status = "error"
 			result.Error = fmt.Sprintf("session creation failed: %v", err)
+		} else {
+			result.PaneID = paneIDAtIndex(sessionName, result.PaneIndex)
 		}
 
 		results = append(results, result)
@@ -320,6 +325,15 @@ func createDelegatedOutputFile() (string, error) {
 
 func delegatedOutputDir() string {
 	return filepath.Join(config.TspDir(), "delegate-output")
+}
+
+func paneIDAtIndex(session string, index int) string {
+	for _, pane := range tmuxpkg.Panes(session) {
+		if pane.Index == index {
+			return pane.ID
+		}
+	}
+	return ""
 }
 
 func delegatedOutputTarget(path string) (string, error) {

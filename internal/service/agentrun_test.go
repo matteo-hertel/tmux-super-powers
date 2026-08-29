@@ -118,6 +118,9 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertObserved stop: %v", err)
 	}
+	managedStop := reg.runs[stop.ID]
+	managedStop.Managed = true
+	reg.runs[stop.ID] = managedStop
 
 	if err := reg.MarkUnseenStopped(map[string]bool{keep.ID: true}, now.Add(time.Minute)); err != nil {
 		t.Fatalf("MarkUnseenStopped: %v", err)
@@ -140,6 +143,25 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("expected non-empty registry file")
+	}
+}
+
+func TestAgentRunRegistryPrunesUnseenObservedSessions(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderFallback, SessionName: "plain-shell", PaneIndex: 0, PID: 12, Status: "idle",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.MarkUnseenStopped(nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Find(run.ID); ok {
+		t.Fatal("unseen observed session remained in the registry")
 	}
 }
 
@@ -187,6 +209,31 @@ func TestAgentRunRegistryRegistersManagedAgentAndReusesIt(t *testing.T) {
 	}
 	if _, ok := reg.Find(managed.ID); ok {
 		t.Fatal("deleted managed run is still present")
+	}
+}
+
+func TestAgentRunRegistryDoesNotReplaceManagedAgentWithIdleShell(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	managed, err := reg.RegisterManaged(SpawnResult{Session: "project", PaneID: "%1"}, AgentProviderClaude, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderFallback, SessionName: "project", PaneID: "%2", PaneIndex: 0, PID: 55, Status: "idle",
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idle.ID == managed.ID {
+		t.Fatal("idle shell replaced the managed agent run")
+	}
+	got, ok := reg.Find(managed.ID)
+	if !ok || got.Provider != AgentProviderClaude || got.Status != "starting" {
+		t.Fatalf("managed run was changed: %#v", got)
 	}
 }
 
@@ -276,16 +323,70 @@ func TestAgentRunRegistryTracksDelegatedPanesInParentSession(t *testing.T) {
 		t.Fatalf("RegisterManaged: %v", err)
 	}
 	child, err := reg.RegisterDelegated(SpawnResult{
-		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath, OutputPath: "/tmp/delegate.log",
+		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath, OutputPath: "/tmp/delegate.log", PaneID: "%42",
 	}, AgentProviderClaude, root.ID, 2, time.Now())
 	if err != nil {
 		t.Fatalf("RegisterDelegated: %v", err)
 	}
-	if child.SessionName != root.SessionName || child.PaneIndex != 2 {
+	if child.SessionName != root.SessionName || child.PaneIndex != 2 || child.PaneID != "%42" {
 		t.Fatalf("delegated target = %s:%d, want %s:2", child.SessionName, child.PaneIndex, root.SessionName)
 	}
 	if child.OutputPath != "/tmp/delegate.log" {
 		t.Fatalf("delegated output path = %q", child.OutputPath)
+	}
+}
+
+func TestAgentRunRegistryTracksDelegatedPaneWhenIndexMoves(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	root, err := reg.RegisterManaged(SpawnResult{Session: "shared", WorktreePath: "/work/shared"}, AgentProviderCodex, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := reg.RegisterDelegated(SpawnResult{Session: "shared", PaneID: "%42"}, AgentProviderClaude, root.ID, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observed, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "shared", PaneID: "%42", PaneIndex: 2, PID: 123, Status: "running",
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.ID != child.ID {
+		t.Fatalf("shifted pane created run %q, want %q", observed.ID, child.ID)
+	}
+	if observed.PaneIndex != 2 {
+		t.Fatalf("shifted pane index = %d, want 2", observed.PaneIndex)
+	}
+}
+
+func TestAgentRunRegistryDoesNotMatchStoppedLegacyRunByPaneIndex(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.runs["legacy"] = AgentRun{
+		ID: "legacy", ParentRunID: "root", Provider: AgentProviderClaude, SessionName: "shared",
+		PaneIndex: 1, Status: "stopped", Managed: true,
+	}
+
+	observed, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "shared", PaneID: "%55", PaneIndex: 1, PID: 987, Status: "running",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.ID == "legacy" {
+		t.Fatal("new pane reused a stopped legacy run")
+	}
+	legacy, ok := reg.Find("legacy")
+	if !ok || legacy.Status != "stopped" || legacy.PaneID != "" {
+		t.Fatalf("legacy run changed: %#v", legacy)
 	}
 }
 

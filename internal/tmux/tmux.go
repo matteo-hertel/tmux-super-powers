@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+type Pane struct {
+	ID    string
+	Index int
+}
+
 // SanitizeSessionName replaces tmux-problematic characters (. and :) with hyphens.
 func SanitizeSessionName(name string) string {
 	r := strings.NewReplacer(".", "-", ":", "-")
@@ -55,65 +60,80 @@ func BuildNewSessionArgs(name, dir, command string) []string {
 
 func BuildSplitPaneArgs(target, dir, command string) []string {
 	args := []string{
-		"split-window", "-v", "-P", "-F", "#{pane_index}",
+		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
 		"-t", target, "-c", dir,
 	}
 	if command != "" {
-		args = append(args, shellCommandArgs(command)...)
+		args = append(args, "/bin/sh", "-c", command)
 	}
 	return args
 }
 
-func SplitPane(session string, parentPane int, dir, command string) (int, error) {
-	target := fmt.Sprintf("%s:0.%d", session, parentPane)
+func SplitPane(session string, parentPane Pane, dir, command string) (Pane, error) {
+	target := paneTarget(session, parentPane)
 	out, err := exec.Command("tmux", BuildSplitPaneArgs(target, dir, command)...).CombinedOutput()
 	if err != nil {
-		return 0, fmt.Errorf("failed to split pane: %w: %s", err, strings.TrimSpace(string(out)))
+		return Pane{}, fmt.Errorf("failed to split pane: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	paneIndex, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		return Pane{}, fmt.Errorf("read split pane target: %q", strings.TrimSpace(string(out)))
+	}
+	paneIndex, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, fmt.Errorf("read split pane index: %w", err)
+		return Pane{}, fmt.Errorf("read split pane index: %w", err)
 	}
-	return paneIndex, nil
+	return Pane{ID: parts[0], Index: paneIndex}, nil
 }
 
-func PaneExists(session string, pane int) bool {
-	for _, paneIndex := range PaneIndices(session) {
-		if paneIndex == pane {
+func PaneExists(session string, pane Pane) bool {
+	for _, candidate := range Panes(session) {
+		if pane.ID != "" {
+			if candidate.ID == pane.ID {
+				return true
+			}
+			continue
+		}
+		if candidate.Index == pane.Index {
 			return true
 		}
 	}
 	return false
 }
 
-func PaneIndices(session string) []int {
-	out, err := exec.Command("tmux", "list-panes", "-t", session+":0", "-F", "#{pane_index}").Output()
+func Panes(session string) []Pane {
+	out, err := exec.Command("tmux", "list-panes", "-t", session+":0", "-F", "#{pane_id}\t#{pane_index}").Output()
 	if err != nil {
 		return nil
 	}
-	var indices []int
+	var panes []Pane
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		index, parseErr := strconv.Atoi(strings.TrimSpace(line))
-		if parseErr == nil {
-			indices = append(indices, index)
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			continue
 		}
+		index, parseErr := strconv.Atoi(parts[1])
+		if parseErr != nil {
+			continue
+		}
+		panes = append(panes, Pane{ID: parts[0], Index: index})
 	}
-	return indices
+	return panes
 }
 
-func KillPane(session string, pane int) error {
+func KillPane(session string, pane Pane) error {
 	if !SessionExists(session) || !PaneExists(session, pane) {
 		return nil
 	}
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+	target := paneTarget(session, pane)
 	if err := exec.Command("tmux", "kill-pane", "-t", target).Run(); err != nil {
 		return fmt.Errorf("kill pane %s: %w", target, err)
 	}
 	return nil
 }
 
-func SelectPane(session string, pane int) error {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+func SelectPane(session string, pane Pane) error {
+	target := paneTarget(session, pane)
 	if err := exec.Command("tmux", "select-pane", "-t", target).Run(); err != nil {
 		return fmt.Errorf("select pane %s: %w", target, err)
 	}
@@ -184,16 +204,27 @@ func shellCommandArgs(command string) []string {
 
 // GetPaneCwd returns the current working directory of a session's first pane.
 func GetPaneCwd(session string) string {
-	return GetPaneCwdByIndex(session, 0)
+	return GetPaneCwdFor(session, Pane{Index: 0})
 }
 
 // GetPaneCwdByIndex returns the current working directory of a specific pane.
 func GetPaneCwdByIndex(session string, pane int) string {
-	target := fmt.Sprintf("%s:0.%d", session, pane)
+	return GetPaneCwdFor(session, Pane{Index: pane})
+}
+
+func GetPaneCwdFor(session string, pane Pane) string {
+	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func paneTarget(session string, pane Pane) string {
+	if pane.ID != "" {
+		return pane.ID
+	}
+	return fmt.Sprintf("%s:0.%d", session, pane.Index)
 }
