@@ -298,7 +298,7 @@ func KillSession(name string, cleanupWorktree bool, worktreePath, branch, gitPat
 			_ = pruneCmd.Run()
 		}
 		// Delete the branch if provided
-		if branch != "" {
+		if branch != "" && branch != "HEAD" {
 			branchCmd := exec.Command("git", "-C", repoFlag, "branch", "-D", branch)
 			_ = branchCmd.Run() // best-effort: branch may already be gone
 		}

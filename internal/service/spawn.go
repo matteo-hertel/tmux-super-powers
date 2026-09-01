@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"io/fs"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -209,22 +208,13 @@ func SpawnAgents(tasks []string, baseBranch string, noInstall bool, cfg *config.
 			}
 		}
 
+		install := ""
 		if !noInstall {
-			spawnCopyNodeModules(repoRoot, worktreePath)
-			pm := spawnDetectPM(repoRoot)
-			if pm != "" {
-				spawnRunPM(pm, worktreePath, repoRoot)
+			if pm := spawnDetectPM(repoRoot); pm != "" {
+				install = pm + " install"
 			}
 		}
-
-		if cfg.Spawn.DefaultSetup != "" {
-			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, worktreePath); err != nil {
-				result.Status = "error"
-				result.Error = fmt.Sprintf("setup failed: %v", err)
-				results = append(results, result)
-				continue
-			}
-		}
+		result.Command = buildLaunchCommand(install, cfg.Spawn.DefaultSetup, result.Command)
 
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
@@ -265,17 +255,10 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 			Status:    "ok",
 		}
 
+		result.Command = buildLaunchCommand("", cfg.Spawn.DefaultSetup, result.Command)
+
 		if tmuxpkg.SessionExists(sessionName) {
 			tmuxpkg.KillSession(sessionName)
-		}
-
-		if cfg.Spawn.DefaultSetup != "" {
-			if err := spawnRunSetup(cfg.Spawn.DefaultSetup, dir); err != nil {
-				result.Status = "error"
-				result.Error = fmt.Sprintf("setup failed: %v", err)
-				results = append(results, result)
-				continue
-			}
 		}
 
 		if err := tmuxpkg.CreateTwoPaneSession(sessionName, dir, result.Command, ""); err != nil {
@@ -293,6 +276,23 @@ func spawnDirect(tasks []string, dir string, cfg *config.Config) ([]SpawnResult,
 
 func BuildAgentCommand(command, prompt string) string {
 	return strings.TrimSpace(command) + " " + shellQuote(prompt)
+}
+
+// buildLaunchCommand runs dependency install and setup inside the agent's own
+// pane so spawning returns once the worktree and session exist. Each step is
+// grouped so a multi-command setup cannot change the chain, and a failing step
+// drops the pane to a shell instead of starting the agent on a broken workspace.
+func buildLaunchCommand(install, setup, agent string) string {
+	var steps []string
+	for _, step := range []string{install, setup} {
+		if strings.TrimSpace(step) != "" {
+			steps = append(steps, "( "+strings.TrimSpace(step)+" )")
+		}
+	}
+	if len(steps) == 0 {
+		return agent
+	}
+	return "if " + strings.Join(steps, " && ") + "; then " + agent + `; else exec "$SHELL"; fi`
 }
 
 func BuildManagerAgentCommand(command, model, prompt string) string {
@@ -359,12 +359,6 @@ func delegatedOutputTarget(path string) (string, error) {
 	return target, nil
 }
 
-func spawnRunSetup(command, dir string) error {
-	cmd := exec.Command("sh", "-c", command)
-	cmd.Dir = dir
-	return cmd.Run()
-}
-
 func spawnGetRepoRoot() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
@@ -418,65 +412,4 @@ func spawnDetectPM(repoRoot string) string {
 		return "npm"
 	}
 	return ""
-}
-
-// spawnCopyNodeModules hardlink-copies node_modules from repoRoot to worktreePath.
-// Uses filepath.WalkDir + os.Link for platform-agnostic hardlinks (works on macOS and Linux).
-// Silently returns nil if node_modules doesn't exist in repoRoot.
-func spawnCopyNodeModules(repoRoot, worktreePath string) error {
-	srcNM := filepath.Join(repoRoot, "node_modules")
-	if _, err := os.Stat(srcNM); err != nil {
-		return nil
-	}
-	dstNM := filepath.Join(worktreePath, "node_modules")
-	return filepath.WalkDir(srcNM, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-		rel, _ := filepath.Rel(srcNM, path)
-		dst := filepath.Join(dstNM, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dst, 0755)
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return nil
-			}
-			return os.Symlink(target, dst)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		return os.Link(path, dst)
-	})
-}
-
-func spawnRunPM(pm, path, repoRoot string) {
-	if pm == "yarn" {
-		yarnDir := filepath.Join(path, ".yarn")
-		os.MkdirAll(yarnDir, 0755)
-		for _, name := range []string{"cache", "install-state.gz", "unplugged"} {
-			src := filepath.Join(repoRoot, ".yarn", name)
-			dst := filepath.Join(yarnDir, name)
-			if _, err := os.Stat(src); err == nil {
-				if _, err := os.Stat(dst); err != nil {
-					exec.Command("cp", "-a", src, dst).Run()
-				}
-			}
-		}
-	}
-	var cmd *exec.Cmd
-	switch pm {
-	case "yarn":
-		cmd = exec.Command("yarn", "install")
-	case "pnpm":
-		cmd = exec.Command("pnpm", "install")
-	case "bun":
-		cmd = exec.Command("bun", "install")
-	default:
-		cmd = exec.Command("npm", "install")
-	}
-	cmd.Dir = path
-	cmd.Run()
 }

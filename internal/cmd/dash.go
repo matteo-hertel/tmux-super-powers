@@ -95,6 +95,7 @@ type agentEntry struct {
 	live          bool
 	sessionExists bool
 	sessionOnly   bool
+	isWorktree    bool
 }
 
 func (a agentEntry) title() string {
@@ -131,8 +132,14 @@ func (a agentEntry) workspacePath() string {
 	return firstNonEmpty(a.worktreePath, a.run.WorktreePath, a.run.CWD)
 }
 
+// ownsWorkspace reports whether cleaning up this entry should also remove its
+// directory and branch. Managed root runs own the worktree they were spawned
+// into; any other root session owns one when it sits in a git worktree itself.
 func (a agentEntry) ownsWorkspace() bool {
-	return a.run.Managed && a.run.ParentRunID == "" && a.worktreePath != ""
+	if a.run.ParentRunID != "" || a.worktreePath == "" {
+		return false
+	}
+	return a.run.Managed || a.isWorktree
 }
 
 func runPane(run service.AgentRun) tmuxpkg.Pane {
@@ -199,6 +206,7 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 				output:        service.CapturePaneContent(sessionName, pane),
 				live:          true,
 				sessionExists: true,
+				isWorktree:    gitInfo.IsWorktree,
 			})
 		}
 		if !agentFound && len(activePanes) > 0 {
@@ -226,11 +234,12 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 			entries = append(entries, agentEntry{
 				run:           run,
 				branch:        firstNonEmpty(run.Branch, gitInfo.Branch),
-				worktreePath:  firstNonEmpty(run.WorktreePath, gitInfo.WorktreePath, cwd),
+				worktreePath:  firstNonEmpty(run.WorktreePath, gitInfo.WorktreePath),
 				gitPath:       firstNonEmpty(run.GitPath, gitInfo.GitPath),
 				output:        service.CapturePaneContent(sessionName, pane),
 				sessionExists: true,
 				sessionOnly:   true,
+				isWorktree:    gitInfo.IsWorktree,
 			})
 		}
 	}
@@ -1090,7 +1099,7 @@ func cleanupAgentCmd(registry *service.AgentRunRegistry, agent agentEntry) tea.C
 		if err == nil {
 			err = refreshErr
 		}
-		message := "Agent workspace removed"
+		message := "Session, worktree, and branch removed"
 		if agent.run.ParentRunID == "" && !agent.ownsWorkspace() {
 			message = "Tmux session removed"
 		} else if agent.run.ParentRunID != "" {
@@ -1535,8 +1544,9 @@ func (m agentDashboardModel) renderConfirmation(cleanup bool) string {
 	description := "Sends Ctrl-C to the agent pane and leaves its session and files in place."
 	if cleanup {
 		if agent.ownsWorkspace() {
-			title = "Remove this agent workspace?"
-			description = "Kills this run and its delegated children, then removes the managed worktree and branch."
+			title = "Remove this workspace?"
+			description = "Kills this run and its delegated children, then deletes the worktree " +
+				agent.worktreePath + " and branch " + firstNonEmpty(agent.branch, "—") + " from disk."
 		} else if agent.run.ParentRunID == "" {
 			title = "Remove this tmux session?"
 			description = "Kills this tmux session. Files on disk remain in place."

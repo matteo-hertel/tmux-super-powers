@@ -731,3 +731,206 @@ func TestDelegatedRunDoesNotOwnSharedWorkspace(t *testing.T) {
 		t.Fatal("delegated run must not own its shared workspace")
 	}
 }
+
+func TestOwnsWorkspace(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry agentEntry
+		want  bool
+	}{
+		{
+			name:  "managed root run with worktree",
+			entry: agentEntry{run: service.AgentRun{Managed: true}, worktreePath: "/tmp/wt"},
+			want:  true,
+		},
+		{
+			name:  "observed session inside a worktree",
+			entry: agentEntry{worktreePath: "/tmp/wt", isWorktree: true},
+			want:  true,
+		},
+		{
+			name:  "observed session in a plain checkout",
+			entry: agentEntry{worktreePath: "/tmp/repo"},
+			want:  false,
+		},
+		{
+			name:  "delegated child inside a worktree",
+			entry: agentEntry{run: service.AgentRun{ParentRunID: "run_parent"}, worktreePath: "/tmp/wt", isWorktree: true},
+			want:  false,
+		},
+		{
+			name:  "managed run without a worktree",
+			entry: agentEntry{run: service.AgentRun{Managed: true}},
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.entry.ownsWorkspace(); got != tt.want {
+				t.Fatalf("ownsWorkspace() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverAgentsMarksWorktreeSessionAsOwningItsWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	repo := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, strings.TrimSpace(string(output)))
+		}
+	}
+	run(repo, "git", "init", "-q", ".")
+	run(repo, "git", "commit", "-q", "--allow-empty", "-m", "init")
+	worktree := filepath.Join(t.TempDir(), "wt")
+	run(repo, "git", "worktree", "add", "-q", "-b", "wt-branch", worktree)
+
+	sessionName := fmt.Sprintf("tsp-worktree-cleanup-test-%d", time.Now().UnixNano())
+	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	entries, err := discoverAgents(registry)
+	if err != nil {
+		t.Fatalf("discoverAgents: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.run.SessionName != sessionName {
+			continue
+		}
+		if !entry.ownsWorkspace() {
+			t.Fatalf("worktree session does not own its workspace: %#v", entry)
+		}
+		if entry.branch != "wt-branch" {
+			t.Fatalf("branch = %q, want %q", entry.branch, "wt-branch")
+		}
+		return
+	}
+	t.Fatalf("worktree session %q was omitted", sessionName)
+}
+
+func TestCleanupAgentRemovesWorktreeSessionFromDisk(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	repo := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, strings.TrimSpace(string(output)))
+		}
+	}
+	run(repo, "git", "init", "-q", ".")
+	run(repo, "git", "commit", "-q", "--allow-empty", "-m", "init")
+	worktree := filepath.Join(t.TempDir(), "wt")
+	run(repo, "git", "worktree", "add", "-q", "-b", "wt-cleanup-branch", worktree)
+
+	sessionName := fmt.Sprintf("tsp-worktree-removal-test-%d", time.Now().UnixNano())
+	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	entries, err := discoverAgents(registry)
+	if err != nil {
+		t.Fatalf("discoverAgents: %v", err)
+	}
+	var selected agentEntry
+	for _, entry := range entries {
+		if entry.run.SessionName == sessionName {
+			selected = entry
+		}
+	}
+	if selected.run.SessionName == "" {
+		t.Fatalf("worktree session %q was omitted", sessionName)
+	}
+
+	done, ok := cleanupAgentCmd(registry, selected)().(agentActionDoneMsg)
+	if !ok {
+		t.Fatal("cleanupAgentCmd did not return agentActionDoneMsg")
+	}
+	if done.err != nil {
+		t.Fatalf("cleanup failed: %v", done.err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree directory still on disk: %v", err)
+	}
+	if exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/wt-cleanup-branch").Run() == nil {
+		t.Fatal("worktree branch still exists")
+	}
+	if tmuxpkg.SessionExists(sessionName) {
+		t.Fatal("tmux session still exists")
+	}
+}
+
+func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	repo := t.TempDir()
+	init := exec.Command("git", "init", "-q", ".")
+	init.Dir = repo
+	if output, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	sessionName := fmt.Sprintf("tsp-plain-repo-test-%d", time.Now().UnixNano())
+	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repo)
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	registry, err := service.NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	entries, err := discoverAgents(registry)
+	if err != nil {
+		t.Fatalf("discoverAgents: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.run.SessionName != sessionName {
+			continue
+		}
+		if entry.ownsWorkspace() {
+			t.Fatalf("plain checkout session claims workspace ownership: %#v", entry)
+		}
+		resolved, err := filepath.EvalSymlinks(repo)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
+		if entry.workspacePath() != resolved {
+			t.Fatalf("workspacePath() = %q, want %q", entry.workspacePath(), resolved)
+		}
+		return
+	}
+	t.Fatalf("plain repo session %q was omitted", sessionName)
+}

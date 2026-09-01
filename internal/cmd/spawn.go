@@ -21,6 +21,10 @@ Git repositories get a unique branch and worktree for every agent. Other
 directories get isolated tmux sessions without a worktree. Agents are recorded
 in the local roster used by tsp dash.
 
+Dependency install and any --setup command run inside the agent pane, so spawn
+returns as soon as the worktree and session exist; the agent starts once they
+finish. Use --no-install to skip the install step.
+
 Examples:
   tsp spawn "fix the auth bug" "add dark mode"
   tsp spawn --agent "codex --full-auto" "refactor the parser"
