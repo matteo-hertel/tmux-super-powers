@@ -126,6 +126,10 @@ Do not start a local server; the project has no server runtime.
   content-change status inference.
 - Worktree cleanup is destructive. Preserve the confirmation step and resolve
   exact session/worktree/branch targets before calling it.
+- Cleanup removes the directory whenever the entry sits in a git worktree, not
+  only for managed runs. `agentEntry.isWorktree` comes from
+  `DetectSessionGitInfoFull`; never infer a removable worktree from a pane cwd,
+  or `x` would delete a plain checkout.
 - `tsp spawn` must not block on dependency install or setup. Dependency
   install and `spawn.default_setup` are chained ahead of the agent inside its
   own pane, so spawning returns once the worktree and session exist. A failing
