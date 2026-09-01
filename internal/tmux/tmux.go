@@ -164,9 +164,14 @@ func RunPopup(command string, width, height int, detach bool) error {
 	return cmd.Run()
 }
 
-// BuildCapturePaneArgs builds tmux capture-pane args.
-func BuildCapturePaneArgs(target string) []string {
-	return []string{"capture-pane", "-t", target, "-p", "-e", "-S", "-"}
+// PreviewCaptureLines bounds the roster snapshot. The dashboard renders at most
+// a terminal height of tail lines, so capturing the full scrollback costs tens of
+// megabytes per pane to display a few dozen rows.
+const PreviewCaptureLines = 400
+
+// BuildPreviewCaptureArgs builds tmux capture-pane args for a bounded snapshot.
+func BuildPreviewCaptureArgs(target string) []string {
+	return []string{"capture-pane", "-t", target, "-p", "-e", "-S", "-" + strconv.Itoa(PreviewCaptureLines)}
 }
 
 // CreateTwoPaneSession creates a tmux session with a left and right pane.
