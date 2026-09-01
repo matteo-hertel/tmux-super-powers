@@ -130,6 +130,11 @@ Do not start a local server; the project has no server runtime.
   content-change status inference.
 - Worktree cleanup is destructive. Preserve the confirmation step and resolve
   exact session/worktree/branch targets before calling it.
+- Worktree removal never unlinks in the foreground. An agent worktree is
+  hundreds of thousands of files, so `KillSession` renames it to a
+  `.tsp-trash-*` sibling (constant time) and unlinks it in a detached process.
+  Keep the rename on the same filesystem or it silently becomes a copy.
+  `tsp cleanup` sweeps staged directories left by an interrupted run.
 - Cleanup removes the directory whenever the entry sits in a git worktree, not
   only for managed runs. `agentEntry.isWorktree` comes from
   `DetectSessionGitInfoFull`; never infer a removable worktree from a pane cwd,

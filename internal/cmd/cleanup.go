@@ -61,6 +61,10 @@ Select items with space, confirm with enter. Removal includes:
 			activeSessions[s] = true
 		}
 
+		for _, staged := range service.SweepWorktreeTrash(base) {
+			fmt.Printf("Resuming interrupted removal: %s\n", filepath.Base(staged))
+		}
+
 		dirEntries, err := os.ReadDir(base)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", base, err)
@@ -69,7 +73,7 @@ Select items with space, confirm with enter. Removal includes:
 
 		var candidates []cleanupEntry
 		for _, de := range dirEntries {
-			if !de.IsDir() {
+			if !de.IsDir() || strings.HasPrefix(de.Name(), service.WorktreeTrashPrefix) {
 				continue
 			}
 			dirPath := filepath.Join(base, de.Name())
@@ -158,14 +162,18 @@ Select items with space, confirm with enter. Removal includes:
 		for _, entry := range fm.toRemove {
 			switch {
 			case strings.HasPrefix(entry.kind, "worktree"):
-				if entry.mainRepo != "" {
+				if staged, err := service.StageWorktreeForRemoval(entry.path); err == nil {
+					service.RemoveInBackground(staged)
+				} else if entry.mainRepo != "" {
 					rmCmd := exec.Command("git", "-C", entry.mainRepo, "worktree", "remove", entry.path, "--force")
 					if err := rmCmd.Run(); err != nil {
 						os.RemoveAll(entry.path)
 					}
-					reposToPrune[entry.mainRepo] = true
 				} else {
 					os.RemoveAll(entry.path)
+				}
+				if entry.mainRepo != "" {
+					reposToPrune[entry.mainRepo] = true
 				}
 				if entry.branch != "" && entry.mainRepo != "" {
 					exec.Command("git", "-C", entry.mainRepo, "branch", "-D", entry.branch).Run()

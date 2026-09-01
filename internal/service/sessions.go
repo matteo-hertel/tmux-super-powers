@@ -289,13 +289,21 @@ func KillSession(name string, cleanupWorktree bool, worktreePath, branch, gitPat
 		if repoFlag == "" {
 			repoFlag = worktreePath // fallback if no main repo path
 		}
-		// Try git worktree remove first
-		rmCmd := exec.Command("git", "-C", repoFlag, "worktree", "remove", worktreePath, "--force")
-		if err := rmCmd.Run(); err != nil {
-			// Fallback: remove directory manually then prune
-			os.RemoveAll(worktreePath)
+		staged, stageErr := StageWorktreeForRemoval(worktreePath)
+		if stageErr == nil {
 			pruneCmd := exec.Command("git", "-C", repoFlag, "worktree", "prune")
 			_ = pruneCmd.Run()
+			RemoveInBackground(staged)
+		} else {
+			// Rename could not free the path (cross-device, permissions). Fall
+			// back to unlinking in the foreground so the caller still gets a
+			// removed worktree, slow as it is.
+			rmCmd := exec.Command("git", "-C", repoFlag, "worktree", "remove", worktreePath, "--force")
+			if err := rmCmd.Run(); err != nil {
+				os.RemoveAll(worktreePath)
+				pruneCmd := exec.Command("git", "-C", repoFlag, "worktree", "prune")
+				_ = pruneCmd.Run()
+			}
 		}
 		// Delete the branch if provided
 		if branch != "" && branch != "HEAD" {
