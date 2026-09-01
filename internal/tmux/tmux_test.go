@@ -116,15 +116,24 @@ func TestIsInsideTmux_Outside(t *testing.T) {
 	}
 }
 
-func TestBuildCapturePaneArgs(t *testing.T) {
-	args := BuildCapturePaneArgs("mysession:0.1")
-	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e", "-S", "-"}
+func TestBuildPreviewCaptureArgs(t *testing.T) {
+	args := BuildPreviewCaptureArgs("mysession:0.1")
+	expected := []string{"capture-pane", "-t", "mysession:0.1", "-p", "-e", "-S", "-400"}
 	if len(args) != len(expected) {
-		t.Fatalf("BuildCapturePaneArgs length = %d, want %d", len(args), len(expected))
+		t.Fatalf("BuildPreviewCaptureArgs length = %d, want %d", len(args), len(expected))
 	}
 	for i, a := range args {
 		if a != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
+		}
+	}
+}
+
+func TestBuildPreviewCaptureArgsNeverCapturesWholeScrollback(t *testing.T) {
+	args := BuildPreviewCaptureArgs("mysession:0.1")
+	for i, a := range args {
+		if a == "-S" && i+1 < len(args) && args[i+1] == "-" {
+			t.Fatal("preview capture used -S - : the roster reads every pane on each refresh, so an unbounded scrollback freezes the dashboard")
 		}
 	}
 }

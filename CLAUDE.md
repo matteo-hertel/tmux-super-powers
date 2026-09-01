@@ -116,8 +116,12 @@ Do not start a local server; the project has no server runtime.
   legacy registry entries.
 - Treat a stopped delegated row without a pane ID as output-only. Its old pane
   index may now belong to a different process.
-- Pane snapshots use `capture-pane -S -`. Keep command output attached to the
-  pane by passing `$SHELL -c` as explicit tmux command arguments.
+- Roster snapshots are bounded (`BuildPreviewCaptureArgs`, `capture-pane -S -400`).
+  The dashboard reads every pane of every session on each refresh and renders
+  only a tail, so never restore `-S -` there. A delegated run's final output
+  still captures the full scrollback in `internal/service/spawn.go`.
+  Keep command output attached to the pane by passing `$SHELL -c` as explicit
+  tmux command arguments.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a

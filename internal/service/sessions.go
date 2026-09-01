@@ -180,10 +180,10 @@ func IsPaneDead(session string, pane tmuxpkg.Pane) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 
-// CapturePaneContent captures a pane and its tmux scrollback.
-func CapturePaneContent(session string, pane tmuxpkg.Pane) string {
+// CapturePanePreview captures a bounded tail of a pane's tmux scrollback.
+func CapturePanePreview(session string, pane tmuxpkg.Pane) string {
 	target := paneTarget(session, pane)
-	args := tmuxpkg.BuildCapturePaneArgs(target)
+	args := tmuxpkg.BuildPreviewCaptureArgs(target)
 	cmd := exec.Command("tmux", args...)
 	out, err := cmd.Output()
 	if err != nil {

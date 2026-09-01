@@ -203,7 +203,7 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 				branch:        firstNonEmpty(run.Branch, gitInfo.Branch),
 				worktreePath:  firstNonEmpty(run.WorktreePath, gitInfo.WorktreePath),
 				gitPath:       firstNonEmpty(run.GitPath, gitInfo.GitPath),
-				output:        service.CapturePaneContent(sessionName, pane),
+				output:        service.CapturePanePreview(sessionName, pane),
 				live:          true,
 				sessionExists: true,
 				isWorktree:    gitInfo.IsWorktree,
@@ -236,7 +236,7 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 				branch:        firstNonEmpty(run.Branch, gitInfo.Branch),
 				worktreePath:  firstNonEmpty(run.WorktreePath, gitInfo.WorktreePath),
 				gitPath:       firstNonEmpty(run.GitPath, gitInfo.GitPath),
-				output:        service.CapturePaneContent(sessionName, pane),
+				output:        service.CapturePanePreview(sessionName, pane),
 				sessionExists: true,
 				sessionOnly:   true,
 				isWorktree:    gitInfo.IsWorktree,
@@ -264,7 +264,7 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 		if run.Status == "stopped" && run.OutputPath != "" {
 			entry.output = service.ReadStoredAgentOutput(run.OutputPath)
 		} else if entry.sessionExists && tmuxpkg.PaneExists(run.SessionName, runPane(run)) {
-			entry.output = service.CapturePaneContent(run.SessionName, runPane(run))
+			entry.output = service.CapturePanePreview(run.SessionName, runPane(run))
 		} else {
 			entry.output = service.ReadStoredAgentOutput(run.OutputPath)
 		}
