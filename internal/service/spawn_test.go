@@ -34,51 +34,29 @@ func TestTaskToBranch(t *testing.T) {
 	}
 }
 
-func TestSpawnCopyNodeModules(t *testing.T) {
-	repoRoot := t.TempDir()
-	worktree := t.TempDir()
-
-	// Create a fake node_modules in repo root
-	nmDir := filepath.Join(repoRoot, "node_modules", "fake-pkg")
-	if err := os.MkdirAll(nmDir, 0755); err != nil {
-		t.Fatal(err)
+func TestBuildLaunchCommand(t *testing.T) {
+	agent := "claude 'fix the bug'"
+	fallback := `; else exec "$SHELL"; fi`
+	tests := []struct {
+		name    string
+		install string
+		setup   string
+		want    string
+	}{
+		{"no install or setup", "", "", agent},
+		{"install only", "yarn install", "", "if ( yarn install ); then " + agent + fallback},
+		{"setup only", "", "make deps", "if ( make deps ); then " + agent + fallback},
+		{"install then setup", "pnpm install", "make deps", "if ( pnpm install ) && ( make deps ); then " + agent + fallback},
+		{"multi-command setup stays grouped", "npm install", "a; b", "if ( npm install ) && ( a; b ); then " + agent + fallback},
+		{"blank steps ignored", "  ", "\t", agent},
 	}
-	testFile := filepath.Join(nmDir, "index.js")
-	if err := os.WriteFile(testFile, []byte("module.exports = 42"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Copy
-	err := spawnCopyNodeModules(repoRoot, worktree)
-	if err != nil {
-		t.Fatalf("spawnCopyNodeModules failed: %v", err)
-	}
-
-	// Verify file was hardlinked (same inode)
-	srcInfo, _ := os.Stat(testFile)
-	dstFile := filepath.Join(worktree, "node_modules", "fake-pkg", "index.js")
-	dstInfo, err := os.Stat(dstFile)
-	if err != nil {
-		t.Fatalf("destination file not found: %v", err)
-	}
-	if !os.SameFile(srcInfo, dstInfo) {
-		t.Error("expected hardlink (same inode), got different files")
-	}
-
-	// Verify content
-	content, _ := os.ReadFile(dstFile)
-	if string(content) != "module.exports = 42" {
-		t.Errorf("content mismatch: %s", content)
-	}
-}
-
-func TestSpawnCopyNodeModulesNoNodeModules(t *testing.T) {
-	repoRoot := t.TempDir()
-	worktree := t.TempDir()
-
-	err := spawnCopyNodeModules(repoRoot, worktree)
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildLaunchCommand(tt.install, tt.setup, agent)
+			if got != tt.want {
+				t.Errorf("buildLaunchCommand(%q, %q) = %q, want %q", tt.install, tt.setup, got, tt.want)
+			}
+		})
 	}
 }
 

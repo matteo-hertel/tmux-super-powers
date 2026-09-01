@@ -126,7 +126,9 @@ Do not start a local server; the project has no server runtime.
   content-change status inference.
 - Worktree cleanup is destructive. Preserve the confirmation step and resolve
   exact session/worktree/branch targets before calling it.
-- `spawn.default_setup` runs through `sh -c` in the new worktree before the
-  agent starts; failures leave the workspace for inspection and return an error.
+- `tsp spawn` must not block on dependency install or setup. Dependency
+  install and `spawn.default_setup` are chained ahead of the agent inside its
+  own pane, so spawning returns once the worktree and session exist. A failing
+  step stops the agent and drops the pane to a shell for inspection.
 - The default branch is protected by local workflow guidance. Create a feature
   branch before committing changes unless explicitly told to commit on main.
