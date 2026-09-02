@@ -448,3 +448,220 @@ func TestAgentRunRegistryDescendantsToleratesCycle(t *testing.T) {
 		t.Fatalf("Descendants() with cycle = %#v, want only child", descendants)
 	}
 }
+
+func TestAgentRunRegistryKeepsManagedRunWhileSetupPaneLooksLikeShell(t *testing.T) {
+	reg, err := NewAgentRunRegistry(filepath.Join(t.TempDir(), "agent-runs.json"))
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	now := time.Date(2026, 9, 2, 13, 9, 4, 0, time.UTC)
+	managed, err := reg.RegisterManaged(SpawnResult{
+		Task:         "TIGER-87",
+		Session:      "backend-tiger-87",
+		PaneID:       "%66",
+		Branch:       "spawn/tiger-87",
+		WorktreePath: "/tmp/backend-tiger-87",
+		GitPath:      "/tmp/backend",
+	}, AgentProviderClaude, 0, now)
+	if err != nil {
+		t.Fatalf("RegisterManaged: %v", err)
+	}
+
+	setup, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderFallback, SessionName: "backend-tiger-87",
+		PaneID: "%66", PaneIndex: 0, PID: 62996, Status: "idle",
+	}, now.Add(24*time.Millisecond))
+	if err != nil {
+		t.Fatalf("UpsertObserved: %v", err)
+	}
+	if setup.ID != managed.ID {
+		t.Fatalf("setup pane forked a second run: got %q want %q", setup.ID, managed.ID)
+	}
+	if setup.Provider != AgentProviderClaude || setup.Task != "TIGER-87" {
+		t.Fatalf("setup pane downgraded the managed run: %#v", setup)
+	}
+
+	started, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "backend-tiger-87",
+		PaneID: "%66", PaneIndex: 0, PID: 62996, Status: "running",
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("UpsertObserved: %v", err)
+	}
+	if started.ID != managed.ID || !started.Managed || started.WorktreePath == "" {
+		t.Fatalf("running agent lost its managed identity: %#v", started)
+	}
+	if runs := reg.List(); len(runs) != 1 {
+		t.Fatalf("expected 1 run for one pane, got %d: %#v", len(runs), runs)
+	}
+}
+
+func TestAgentRunRegistryAdoptsPaneObservedBeforeRegistration(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 2, 13, 9, 4, 0, time.UTC)
+	observed, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "backend-tiger-87",
+		PaneID: "%66", PaneIndex: 0, PID: 62996, Status: "running",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed, err := reg.RegisterManaged(SpawnResult{
+		Task: "TIGER-87", Session: "backend-tiger-87", PaneID: "%66",
+		WorktreePath: "/tmp/backend-tiger-87",
+	}, AgentProviderClaude, 0, now.Add(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.ID != observed.ID {
+		t.Fatalf("registration forked a second run: got %q want %q", managed.ID, observed.ID)
+	}
+	if runs := reg.List(); len(runs) != 1 {
+		t.Fatalf("expected 1 run for one pane, got %d", len(runs))
+	}
+}
+
+func TestMergePaneDuplicatesHealsOrphanedManagedRun(t *testing.T) {
+	spawned := time.Date(2026, 9, 2, 13, 9, 4, 0, time.UTC)
+	seen := time.Date(2026, 9, 2, 15, 39, 49, 0, time.UTC)
+	merged := MergePaneDuplicates([]AgentRun{
+		{
+			ID: "run_observed", Provider: AgentProviderClaude, SessionName: "backend-tiger-87",
+			PaneID: "%66", PaneIndex: 0, PID: 62996, Status: "running",
+			StartedAt: spawned.Add(24 * time.Millisecond), LastSeenAt: seen,
+		},
+		{
+			ID: "run_managed", Provider: AgentProviderClaude, Task: "TIGER-87",
+			SessionName: "backend-tiger-87", PaneID: "%66", PaneIndex: 0,
+			Branch: "spawn/tiger-87", WorktreePath: "/tmp/backend-tiger-87", GitPath: "/tmp/backend",
+			Status: "stopped", StartedAt: spawned, LastSeenAt: spawned, Managed: true,
+		},
+		{
+			ID: "run_child", ParentRunID: "run_observed", Provider: AgentProviderClaude,
+			SessionName: "backend-tiger-87", PaneID: "%70", PaneIndex: 1,
+			Status: "running", StartedAt: seen, LastSeenAt: seen, Managed: true,
+		},
+	})
+
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 runs after healing, got %d: %#v", len(merged), merged)
+	}
+	var pane, child AgentRun
+	for _, run := range merged {
+		switch run.PaneID {
+		case "%66":
+			pane = run
+		case "%70":
+			child = run
+		}
+	}
+	if pane.ID != "run_managed" || !pane.Managed {
+		t.Fatalf("healed run lost its managed identity: %#v", pane)
+	}
+	if pane.Task != "TIGER-87" || pane.WorktreePath != "/tmp/backend-tiger-87" || pane.Branch != "spawn/tiger-87" {
+		t.Fatalf("healed run lost its workspace metadata: %#v", pane)
+	}
+	if pane.PID != 62996 || pane.Status != "running" || !pane.LastSeenAt.Equal(seen) {
+		t.Fatalf("healed run lost the live observation: %#v", pane)
+	}
+	if !pane.StartedAt.Equal(spawned) {
+		t.Fatalf("healed run lost its spawn time: %#v", pane)
+	}
+	if child.ParentRunID != "run_managed" {
+		t.Fatalf("child still points at the folded run: %q", child.ParentRunID)
+	}
+}
+
+func TestAgentRunRegistryHealsDuplicatesOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	stored := `{"runs":[
+		{"id":"run_observed","provider":"claude","sessionName":"s","paneId":"%1","paneIndex":0,"pid":42,"status":"running","startedAt":"2026-09-02T13:09:04.793387Z","lastSeenAt":"2026-09-02T15:39:49Z"},
+		{"id":"run_managed","provider":"claude","task":"T","sessionName":"s","paneId":"%1","paneIndex":0,"worktreePath":"/tmp/wt","status":"stopped","startedAt":"2026-09-02T13:09:04.769407Z","lastSeenAt":"2026-09-02T13:09:04.769407Z","managed":true}
+	]}`
+	if err := os.WriteFile(path, []byte(stored), 0644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatalf("NewAgentRunRegistry: %v", err)
+	}
+	runs := reg.List()
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 healed run, got %d: %#v", len(runs), runs)
+	}
+	if runs[0].ID != "run_managed" || runs[0].PID != 42 || runs[0].Task != "T" {
+		t.Fatalf("healed run is wrong: %#v", runs[0])
+	}
+}
+
+func TestAgentRunRegistryKeepsRunsWrittenByAnotherProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+
+	dash, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dash.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "dash", PaneID: "%1", PID: 1, Status: "running",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	spawn, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := spawn.RegisterManaged(SpawnResult{
+		Task: "T", Session: "spawned", PaneID: "%2", WorktreePath: "/tmp/wt",
+	}, AgentProviderClaude, 0, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The dashboard's next refresh must not overwrite the spawned run.
+	if _, err := dash.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "dash", PaneID: "%1", PID: 1, Status: "running",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Find(other.ID); !ok {
+		t.Fatalf("concurrent spawn was dropped: %#v", reloaded.List())
+	}
+	if len(reloaded.List()) != 2 {
+		t.Fatalf("expected both runs, got %#v", reloaded.List())
+	}
+}
+
+func TestAgentRunRegistryDoesNotResurrectDeletedRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
+	reg, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := reg.RegisterManaged(SpawnResult{
+		Task: "T", Session: "s", PaneID: "%1", WorktreePath: "/tmp/wt",
+	}, AgentProviderClaude, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Delete(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "other", PaneID: "%9", PID: 3, Status: "running",
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Find(run.ID); ok {
+		t.Fatal("deleted run came back from disk")
+	}
+}

@@ -58,15 +58,17 @@ type agentRunFile struct {
 
 // AgentRunRegistry stores agent runs in memory and persists them as JSON.
 type AgentRunRegistry struct {
-	mu   sync.RWMutex
-	path string
-	runs map[string]AgentRun
+	mu      sync.RWMutex
+	path    string
+	runs    map[string]AgentRun
+	removed map[string]bool
 }
 
 func NewAgentRunRegistry(path string) (*AgentRunRegistry, error) {
 	reg := &AgentRunRegistry{
-		path: path,
-		runs: make(map[string]AgentRun),
+		path:    path,
+		runs:    make(map[string]AgentRun),
+		removed: make(map[string]bool),
 	}
 	if path == "" {
 		return reg, nil
@@ -82,7 +84,7 @@ func NewAgentRunRegistry(path string) (*AgentRunRegistry, error) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, err
 	}
-	for _, run := range stored.Runs {
+	for _, run := range MergePaneDuplicates(stored.Runs) {
 		if run.ID == "" {
 			continue
 		}
@@ -99,6 +101,7 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncFromDiskLocked()
 
 	id := r.findMatchingLocked(obs)
 	if id == "" {
@@ -112,7 +115,9 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 	}
 
 	run := r.runs[id]
-	run.Provider = obs.Provider
+	if obs.Provider != AgentProviderFallback || !run.Managed {
+		run.Provider = obs.Provider
+	}
 	run.SessionName = obs.SessionName
 	run.PaneIndex = obs.PaneIndex
 	if obs.PaneID != "" {
@@ -146,14 +151,18 @@ func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 		if obs.PaneID != "" && run.PaneID == "" && run.Managed && run.Status == "stopped" {
 			continue
 		}
+		samePane := obs.PaneID != "" && run.PaneID == obs.PaneID
 		if obs.PaneID != "" && run.PaneID != "" {
-			if run.PaneID != obs.PaneID {
+			if !samePane {
 				continue
 			}
 		} else if run.PaneIndex != obs.PaneIndex {
 			continue
 		}
-		if obs.Provider == AgentProviderFallback && run.Managed {
+		// A managed agent still running its setup chain looks like a plain
+		// shell. Only an unrelated pane may be refused on that basis; an exact
+		// pane id is the run's own identity.
+		if obs.Provider == AgentProviderFallback && run.Managed && !samePane {
 			continue
 		}
 		if obs.PID != 0 && run.PID != 0 && run.PID != obs.PID {
@@ -185,14 +194,24 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.syncFromDiskLocked()
 
+	// A dashboard refresh can observe the new pane before this call lands, so
+	// adopt any run already holding it instead of minting a second identity.
 	var id string
 	for candidateID, run := range r.runs {
-		samePane := result.PaneID == "" || run.PaneID == "" || run.PaneID == result.PaneID
-		if run.SessionName == result.Session && run.PaneIndex == paneIndex && run.ParentRunID == "" && run.Managed && samePane {
-			id = candidateID
-			break
+		if run.SessionName != result.Session || run.ParentRunID != "" {
+			continue
 		}
+		if result.PaneID != "" && run.PaneID != "" {
+			if run.PaneID != result.PaneID {
+				continue
+			}
+		} else if run.PaneIndex != paneIndex || !run.Managed {
+			continue
+		}
+		id = candidateID
+		break
 	}
 	if id == "" {
 		id = newAgentRunID()
@@ -314,6 +333,7 @@ func (r *AgentRunRegistry) Delete(id string) error {
 		return err
 	}
 	delete(r.runs, id)
+	r.removed[id] = true
 	if err := r.saveLocked(); err != nil {
 		return err
 	}
@@ -339,6 +359,7 @@ func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time
 		}
 		if !run.Managed {
 			delete(r.runs, id)
+			r.removed[id] = true
 			changed = true
 			continue
 		}
@@ -391,10 +412,37 @@ func sortRuns(runs []AgentRun) {
 	})
 }
 
+// syncFromDiskLocked folds in runs another tsp process wrote since this one
+// loaded the file. Without it a long-lived dashboard overwrites every record
+// created by a concurrent `tsp spawn`.
+func (r *AgentRunRegistry) syncFromDiskLocked() {
+	if r.path == "" {
+		return
+	}
+	data, err := os.ReadFile(r.path)
+	if err != nil {
+		return
+	}
+	var stored agentRunFile
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return
+	}
+	for _, run := range stored.Runs {
+		if run.ID == "" || r.removed[run.ID] {
+			continue
+		}
+		if current, ok := r.runs[run.ID]; ok && !run.LastSeenAt.After(current.LastSeenAt) {
+			continue
+		}
+		r.runs[run.ID] = run
+	}
+}
+
 func (r *AgentRunRegistry) saveLocked() error {
 	if r.path == "" {
 		return nil
 	}
+	r.syncFromDiskLocked()
 	if err := os.MkdirAll(filepath.Dir(r.path), 0755); err != nil {
 		return err
 	}
@@ -438,4 +486,109 @@ func DetectAgentProvider(process string) string {
 		return AgentProviderClaude
 	}
 	return AgentProviderFallback
+}
+
+// MergePaneDuplicates folds records that describe the same tmux pane into one
+// run. Earlier versions minted a second identity when a managed agent was first
+// observed as a plain shell, which left the managed record orphaned and listed
+// the pane twice in the dashboard.
+func MergePaneDuplicates(runs []AgentRun) []AgentRun {
+	grouped := make(map[string][]AgentRun)
+	var order []string
+	merged := make([]AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run.ID == "" {
+			continue
+		}
+		if run.PaneID == "" {
+			merged = append(merged, run)
+			continue
+		}
+		key := run.SessionName + "\x00" + run.PaneID
+		if _, seen := grouped[key]; !seen {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], run)
+	}
+
+	folded := make(map[string]string)
+	for _, key := range order {
+		group := grouped[key]
+		if len(group) == 1 {
+			merged = append(merged, group[0])
+			continue
+		}
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].Managed != group[j].Managed {
+				return group[i].Managed
+			}
+			if !group[i].StartedAt.Equal(group[j].StartedAt) {
+				return group[i].StartedAt.Before(group[j].StartedAt)
+			}
+			return group[i].ID < group[j].ID
+		})
+		primary := group[0]
+		for _, run := range group[1:] {
+			folded[run.ID] = primary.ID
+			primary = absorbRun(primary, run)
+		}
+		merged = append(merged, primary)
+	}
+
+	if len(folded) > 0 {
+		for index, run := range merged {
+			target, ok := folded[run.ParentRunID]
+			if !ok {
+				continue
+			}
+			if target == run.ID {
+				target = ""
+			}
+			merged[index].ParentRunID = target
+		}
+	}
+	sortRuns(merged)
+	return merged
+}
+
+// absorbRun keeps primary's durable identity and takes the freshest process
+// observation from the duplicate.
+func absorbRun(primary, other AgentRun) AgentRun {
+	if other.LastSeenAt.After(primary.LastSeenAt) {
+		primary.Status = other.Status
+		primary.LastSeenAt = other.LastSeenAt
+		primary.PaneIndex = other.PaneIndex
+		primary.PID = other.PID
+	}
+	if !other.StartedAt.IsZero() && other.StartedAt.Before(primary.StartedAt) {
+		primary.StartedAt = other.StartedAt
+	}
+	if primary.PID == 0 {
+		primary.PID = other.PID
+	}
+	if primary.Provider == "" || primary.Provider == AgentProviderFallback {
+		if other.Provider != "" && other.Provider != AgentProviderFallback {
+			primary.Provider = other.Provider
+		}
+	}
+	if primary.ParentRunID == "" {
+		primary.ParentRunID = other.ParentRunID
+	}
+	primary.Managed = primary.Managed || other.Managed
+	primary.Task = firstNonEmptyField(primary.Task, other.Task)
+	primary.CWD = firstNonEmptyField(primary.CWD, other.CWD)
+	primary.Branch = firstNonEmptyField(primary.Branch, other.Branch)
+	primary.WorktreePath = firstNonEmptyField(primary.WorktreePath, other.WorktreePath)
+	primary.GitPath = firstNonEmptyField(primary.GitPath, other.GitPath)
+	primary.OutputPath = firstNonEmptyField(primary.OutputPath, other.OutputPath)
+	return primary
+}
+
+func firstNonEmptyField(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
