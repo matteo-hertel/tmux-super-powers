@@ -116,6 +116,13 @@ Do not start a local server; the project has no server runtime.
   legacy registry entries.
 - Treat a stopped delegated row without a pane ID as output-only. Its old pane
   index may now belong to a different process.
+- A pane id identifies a run. A managed agent still running its chained
+  install/setup command looks like a plain shell, so an observation must never
+  mint a second run for a pane a managed run already holds, in either
+  direction. `MergePaneDuplicates` folds records left by older versions.
+- The registry file is shared. Every process merges the file back in before
+  writing, so a long-lived `tsp dash` cannot overwrite runs a concurrent
+  `tsp spawn` created.
 - Roster snapshots are bounded (`BuildPreviewCaptureArgs`, `capture-pane -S -400`).
   The dashboard reads every pane of every session on each refresh and renders
   only a tail, so never restore `-S -` there. A delegated run's final output
