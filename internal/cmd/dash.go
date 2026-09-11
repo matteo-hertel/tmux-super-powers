@@ -1299,7 +1299,7 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 	for index := start; index < end; index++ {
 		entry := m.agents[index]
 		indent := strings.Repeat("  ", min(m.agentDepth(entry), 3))
-		textWidth := max(8, contentWidth-len(indent)-2)
+		textWidth := max(8, contentWidth-len(indent)-3)
 		statusColor := dashFaint
 		statusGlyph := "○"
 		if entry.live {

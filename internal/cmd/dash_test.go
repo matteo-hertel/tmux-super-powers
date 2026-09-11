@@ -145,6 +145,22 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	}
 }
 
+func TestAgentDashboardRosterRowsDoNotWrap(t *testing.T) {
+	long := strings.Repeat("backend-very-long-session-name-", 4)
+	model := newAgentDashboardModel([]agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: long}, branch: long, live: true, sessionExists: true},
+		{
+			run:    service.AgentRun{ID: "run", SessionName: long, Provider: service.AgentProviderClaude, Task: long},
+			branch: long, live: true, sessionExists: true,
+		},
+	}, &config.Config{}, nil, "/repo")
+
+	lines := strings.Split(model.renderRoster(40, 20, false), "\n")
+	if !strings.Contains(lines[4], "CLAUDE") {
+		t.Fatalf("agent row does not start on line 4, so a row wrapped: %q", lines)
+	}
+}
+
 func TestAgentDashboardHeaderCountsSessionsAndAgents(t *testing.T) {
 	entries := []agentEntry{
 		{isSession: true, run: service.AgentRun{SessionName: "agent-session"}, live: true, sessionExists: true},
