@@ -37,9 +37,10 @@ internal/pathutil/           Path expansion and directory helpers
 Use `.interface-design/system.md` as the source of truth for dashboard layout,
 tokens, hierarchy, reusable controls, and keyboard interaction patterns.
 
-The dashboard does not own a timer. It lists every live tmux session, discovers
-agent processes, and captures output once at startup and once per explicit
-refresh/action.
+The dashboard does not own a timer. It lists every tmux session, collapsed by
+default; `l` expands a session to show its agents and `h` folds it. Retained
+managed runs sit under their closed session. Session rows are not registry
+runs. It captures output once at startup and once per explicit refresh/action.
 
 ## CLI surface
 
@@ -49,7 +50,7 @@ refresh/action.
 | `tsp project` | Create a project and tmux session. |
 | `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Open projects; browse sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
+| `tsp dash` | Open projects; jump to sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
 | `tsp rm` | Remove sessions with worktree awareness. |
 | `tsp cleanup` | Remove orphaned worktree-base entries. |
 | `tsp wtx-new` | Create manual worktree sessions. |
@@ -100,6 +101,9 @@ Do not start a local server; the project has no server runtime.
   Do not add a second directory discovery or session launch path.
 - Every session launcher uses the `twosplit` shape: the configured primary
   agent in pane 0 at 80%, and an empty shell in pane 1 at 20%.
+- The split must survive its agent. `shellCommandArgs` traps SIGINT and
+  `exec`s the shell after the command, so an exited or interrupted agent leaves
+  a shell in the same pane. Without the trap, Ctrl-C closes the pane.
 - `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI
   arguments. Keep quoting in `internal/service/spawn.go`; do not restore
   follow-up prompt injection with `tmux send-keys`.
@@ -120,6 +124,8 @@ Do not start a local server; the project has no server runtime.
   install/setup command looks like a plain shell, so an observation must never
   mint a second run for a pane a managed run already holds, in either
   direction. `MergePaneDuplicates` folds records left by older versions.
+  An agent restarted in the same pane keeps its run. A managed root run whose
+  pane closed moves onto the agent now running in its session.
 - The registry file is shared. Every process merges the file back in before
   writing, so a long-lived `tsp dash` cannot overwrite runs a concurrent
   `tsp spawn` created.
@@ -132,7 +138,8 @@ Do not start a local server; the project has no server runtime.
 - A managed agent can outlive its process in the roster. This is intentional so
   its worktree can be cleaned explicitly.
 - Process names vary: Claude may appear as a semantic version, Codex may use a
-  platform-suffixed binary, and agents may be shell children.
+  platform-suffixed binary, and agents run as descendants of the pane shell
+  (npm Codex is shell, then node, then the native binary).
 - `tsp dash` must remain on-demand. Do not add Bubble Tea ticks, CI polling, or
   content-change status inference.
 - Worktree cleanup is destructive. Preserve the confirmation step and resolve
@@ -146,6 +153,8 @@ Do not start a local server; the project has no server runtime.
   only for managed runs. `agentEntry.isWorktree` comes from
   `DetectSessionGitInfoFull`; never infer a removable worktree from a pane cwd,
   or `x` would delete a plain checkout.
+- Session rows never own a workspace. `x` on a session row kills only the tmux
+  session; worktree removal stays on the agent row.
 - `tsp spawn` must not block on dependency install or setup. Dependency
   install and `spawn.default_setup` are chained ahead of the agent inside its
   own pane, so spawning returns once the worktree and session exist. A failing

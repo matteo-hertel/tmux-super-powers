@@ -36,7 +36,7 @@ func TestTaskToBranch(t *testing.T) {
 
 func TestBuildLaunchCommand(t *testing.T) {
 	agent := "claude 'fix the bug'"
-	fallback := `; else exec "$SHELL"; fi`
+	fallback := "; fi"
 	tests := []struct {
 		name    string
 		install string

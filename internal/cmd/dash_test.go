@@ -145,8 +145,26 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	}
 }
 
-func TestAgentDashboardCountsIdleTmuxSessions(t *testing.T) {
+func TestAgentDashboardRosterRowsDoNotWrap(t *testing.T) {
+	long := strings.Repeat("backend-very-long-session-name-", 4)
+	model := newAgentDashboardModel([]agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: long}, branch: long, live: true, sessionExists: true},
+		{
+			run:    service.AgentRun{ID: "run", SessionName: long, Provider: service.AgentProviderClaude, Task: long},
+			branch: long, live: true, sessionExists: true,
+		},
+	}, &config.Config{}, nil, "/repo")
+	model.expanded[long] = true
+
+	lines := strings.Split(model.renderRoster(40, 20, false), "\n")
+	if !strings.Contains(lines[4], "CLAUDE") {
+		t.Fatalf("agent row does not start on line 4, so a row wrapped: %q", lines)
+	}
+}
+
+func TestAgentDashboardHeaderCountsSessionsAndAgents(t *testing.T) {
 	entries := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "agent-session"}, live: true, sessionExists: true},
 		{
 			run:  service.AgentRun{ID: "run-agent", SessionName: "agent-session", PaneIndex: 1},
 			live: true, sessionExists: true,
@@ -155,24 +173,19 @@ func TestAgentDashboardCountsIdleTmuxSessions(t *testing.T) {
 			run:  service.AgentRun{ID: "run-child", SessionName: "agent-session", PaneIndex: 2},
 			live: true, sessionExists: true,
 		},
+		{isSession: true, run: service.AgentRun{SessionName: "done-session"}, sessionExists: true},
 		{
-			run:           service.AgentRun{ID: "run-idle", SessionName: "idle-session", PaneIndex: 0},
-			sessionExists: true, sessionOnly: true,
+			run:           service.AgentRun{ID: "run-exited", SessionName: "done-session", Managed: true},
+			sessionExists: true,
 		},
 	}
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	model.width = 100
 	model.height = 20
 
-	if got := model.sessionCount(); got != 2 {
-		t.Fatalf("sessionCount() = %d, want 2", got)
-	}
-	if entries[2].status() != "idle" || entries[2].provider() != "session" {
-		t.Fatalf("idle entry = %s/%s, want idle/session", entries[2].status(), entries[2].provider())
-	}
 	view := model.View()
-	if !strings.Contains(view, "2 sessions · 2 active agents") {
-		t.Fatalf("dashboard header does not show session count: %q", view)
+	if !strings.Contains(view, "2 sessions · 3 agents · 2 running") {
+		t.Fatalf("dashboard header does not count sessions and agents: %q", view)
 	}
 }
 
@@ -180,12 +193,11 @@ func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 	var entries []agentEntry
 	for index := 0; index < 7; index++ {
 		entries = append(entries, agentEntry{
+			isSession: true,
 			run: service.AgentRun{
-				ID:          fmt.Sprintf("run-%d", index),
 				SessionName: fmt.Sprintf("session-%d", index),
 			},
 			sessionExists: true,
-			sessionOnly:   true,
 		})
 	}
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
@@ -197,7 +209,7 @@ func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgentsIncludesIdleTmuxSession(t *testing.T) {
+func TestDiscoverAgentsListsSessionWithoutAgent(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
@@ -218,15 +230,15 @@ func TestDiscoverAgentsIncludesIdleTmuxSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverAgents: %v", err)
 	}
+	var rows []agentEntry
 	for _, entry := range entries {
 		if entry.run.SessionName == sessionName {
-			if !entry.sessionOnly || entry.status() != "idle" {
-				t.Fatalf("idle session entry = %#v", entry)
-			}
-			return
+			rows = append(rows, entry)
 		}
 	}
-	t.Fatalf("idle tmux session %q was omitted", sessionName)
+	if len(rows) != 1 || !rows[0].isSession || rows[0].status() != "idle" {
+		t.Fatalf("session rows = %#v, want one idle session row", rows)
+	}
 }
 
 func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
@@ -417,6 +429,92 @@ func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
 	got := next.(agentDashboardModel)
 	if got.attachSession != "shared-session" || got.attachPane.Index != 3 {
 		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane.Index)
+	}
+}
+
+func TestGroupBySessionNestsAgentsUnderTheirSession(t *testing.T) {
+	sessions := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "idle"}, sessionExists: true, output: "idle prompt"},
+	}
+	agents := []agentEntry{
+		{run: service.AgentRun{ID: "run-gone", SessionName: "gone", Managed: true}, branch: "spawn/gone"},
+		{run: service.AgentRun{ID: "run-alpha", SessionName: "alpha"}, live: true, sessionExists: true, output: "alpha output"},
+	}
+
+	rows := groupBySession(sessions, agents)
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.key())
+	}
+	want := "session:alpha,run-alpha,session:idle,session:gone,run-gone"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("rows = %v, want %s", got, want)
+	}
+	if !rows[0].live || rows[0].output != "alpha output" {
+		t.Fatalf("session row did not take its agent's state: %#v", rows[0])
+	}
+	if rows[3].status() != "missing" || rows[3].branch != "spawn/gone" {
+		t.Fatalf("row for a closed session = %#v", rows[3])
+	}
+}
+
+func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
+	entries := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},
+		{run: service.AgentRun{ID: "run-a", SessionName: "alpha"}, live: true, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "beta"}, sessionExists: true},
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	press := func(m agentDashboardModel, key string) agentDashboardModel {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		return next.(agentDashboardModel)
+	}
+	visible := func(m agentDashboardModel) string {
+		var keys []string
+		for _, row := range m.rows() {
+			keys = append(keys, row.key())
+		}
+		return strings.Join(keys, ",")
+	}
+
+	if got := visible(model); got != "session:alpha,session:beta" {
+		t.Fatalf("collapsed rows = %s", got)
+	}
+	model = press(model, "l")
+	if got := visible(model); got != "session:alpha,run-a,session:beta" {
+		t.Fatalf("expanded rows = %s", got)
+	}
+	model = press(model, "j")
+	if selected, _ := model.selected(); selected.key() != "run-a" {
+		t.Fatalf("selected after j = %q, want run-a", selected.key())
+	}
+	model = press(model, "h")
+	if selected, _ := model.selected(); selected.key() != "session:alpha" || visible(model) != "session:alpha,session:beta" {
+		t.Fatalf("h did not fold back to the session: selected %q, rows %s", selected.key(), visible(model))
+	}
+
+	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Delegated agent started", selectedID: "run-a"})
+	model = next.(agentDashboardModel)
+	if selected, _ := model.selected(); selected.key() != "run-a" {
+		t.Fatalf("new agent in a collapsed session was not revealed: %q", selected.key())
+	}
+}
+
+func TestAgentDashboardSessionRowAttachesWithoutPaneAndCannotStop(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},
+	}, &config.Config{}, nil, "/repo")
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := next.(agentDashboardModel)
+	if got.mode != dashAgentsBrowse {
+		t.Fatalf("stop on a session row opened mode %v", got.mode)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(agentDashboardModel)
+	if got.attachSession != "alpha" || got.attachPane.Index != -1 {
+		t.Fatalf("attach target = %s:%d, want alpha with no pane", got.attachSession, got.attachPane.Index)
 	}
 }
 
@@ -759,6 +857,11 @@ func TestOwnsWorkspace(t *testing.T) {
 			want:  false,
 		},
 		{
+			name:  "session row inside a worktree",
+			entry: agentEntry{isSession: true, worktreePath: "/tmp/wt", isWorktree: true},
+			want:  false,
+		},
+		{
 			name:  "managed run without a worktree",
 			entry: agentEntry{run: service.AgentRun{Managed: true}},
 			want:  false,
@@ -792,14 +895,7 @@ func TestDiscoverAgentsMarksWorktreeSessionAsOwningItsWorkspace(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "wt")
 	run(repo, "git", "worktree", "add", "-q", "-b", "wt-branch", worktree)
 
-	sessionName := fmt.Sprintf("tsp-worktree-cleanup-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, worktree)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -810,7 +906,7 @@ func TestDiscoverAgentsMarksWorktreeSessionAsOwningItsWorkspace(t *testing.T) {
 		t.Fatalf("discoverAgents: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.run.SessionName != sessionName {
+		if entry.isSession || entry.run.SessionName != sessionName {
 			continue
 		}
 		if !entry.ownsWorkspace() {
@@ -843,14 +939,7 @@ func TestCleanupAgentRemovesWorktreeSessionFromDisk(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "wt")
 	run(repo, "git", "worktree", "add", "-q", "-b", "wt-cleanup-branch", worktree)
 
-	sessionName := fmt.Sprintf("tsp-worktree-removal-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, worktree)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -862,7 +951,7 @@ func TestCleanupAgentRemovesWorktreeSessionFromDisk(t *testing.T) {
 	}
 	var selected agentEntry
 	for _, entry := range entries {
-		if entry.run.SessionName == sessionName {
+		if !entry.isSession && entry.run.SessionName == sessionName {
 			selected = entry
 		}
 	}
@@ -899,14 +988,7 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		t.Fatalf("git init: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	sessionName := fmt.Sprintf("tsp-plain-repo-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repo)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, repo)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -917,7 +999,7 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		t.Fatalf("discoverAgents: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.run.SessionName != sessionName {
+		if entry.isSession || entry.run.SessionName != sessionName {
 			continue
 		}
 		if entry.ownsWorkspace() {
@@ -933,4 +1015,33 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		return
 	}
 	t.Fatalf("plain repo session %q was omitted", sessionName)
+}
+
+func startFakeAgentSession(t *testing.T, dir string) string {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep is not installed")
+	}
+	agent := filepath.Join(t.TempDir(), "codex")
+	if err := os.Symlink(sleep, agent); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-fake-agent-test-%d", time.Now().UnixNano())
+	if err := tmuxpkg.CreateTwoPaneSession(session, dir, "'"+agent+"' 30", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(session)
+	})
+	pane := tmuxpkg.Pane{Index: 0}
+	deadline := time.Now().Add(2 * time.Second)
+	for service.DetectPaneAgentProcess(session, pane, service.GetPaneProcess(session, pane)).Provider != service.AgentProviderCodex {
+		if time.Now().After(deadline) {
+			t.Fatal("fake codex agent was not detected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return session
 }

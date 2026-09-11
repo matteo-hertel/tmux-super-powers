@@ -43,13 +43,14 @@ type AgentRun struct {
 // ObservedAgentRun is an on-demand process observation used to create or
 // refresh a run.
 type ObservedAgentRun struct {
-	Provider    string
-	SessionName string
-	PaneIndex   int
-	PaneID      string
-	PID         int
-	CWD         string
-	Status      string
+	Provider       string
+	SessionName    string
+	PaneIndex      int
+	PaneID         string
+	PID            int
+	CWD            string
+	Status         string
+	SessionPaneIDs []string
 }
 
 type agentRunFile struct {
@@ -104,6 +105,14 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 	r.syncFromDiskLocked()
 
 	id := r.findMatchingLocked(obs)
+	if matched, ok := r.runs[id]; !ok || !matched.Managed {
+		if orphan := r.findOrphanedManagedLocked(obs); orphan != "" {
+			if ok {
+				r.foldRunLocked(id, orphan)
+			}
+			id = orphan
+		}
+	}
 	if id == "" {
 		id = newAgentRunID()
 		r.runs[id] = AgentRun{
@@ -165,7 +174,7 @@ func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 		if obs.Provider == AgentProviderFallback && run.Managed && !samePane {
 			continue
 		}
-		if obs.PID != 0 && run.PID != 0 && run.PID != obs.PID {
+		if !samePane && obs.PID != 0 && run.PID != 0 && run.PID != obs.PID {
 			continue
 		}
 		if obs.PID == 0 && run.Provider != obs.Provider {
@@ -176,6 +185,37 @@ func (r *AgentRunRegistry) findMatchingLocked(obs ObservedAgentRun) string {
 		}
 	}
 	return best.ID
+}
+
+func (r *AgentRunRegistry) findOrphanedManagedLocked(obs ObservedAgentRun) string {
+	if obs.PaneID == "" || len(obs.SessionPaneIDs) == 0 {
+		return ""
+	}
+	live := make(map[string]bool, len(obs.SessionPaneIDs))
+	for _, paneID := range obs.SessionPaneIDs {
+		live[paneID] = true
+	}
+	var best AgentRun
+	for _, run := range r.runs {
+		if run.SessionName != obs.SessionName || !run.Managed || run.ParentRunID != "" || run.PaneID == "" || live[run.PaneID] {
+			continue
+		}
+		if best.ID == "" || run.StartedAt.After(best.StartedAt) {
+			best = run
+		}
+	}
+	return best.ID
+}
+
+func (r *AgentRunRegistry) foldRunLocked(from, into string) {
+	for id, run := range r.runs {
+		if run.ParentRunID == from {
+			run.ParentRunID = into
+			r.runs[id] = run
+		}
+	}
+	delete(r.runs, from)
+	r.removed[from] = true
 }
 
 // RegisterManaged records an agent created by tsp before its process becomes

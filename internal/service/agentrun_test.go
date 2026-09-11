@@ -524,6 +524,79 @@ func TestAgentRunRegistryAdoptsPaneObservedBeforeRegistration(t *testing.T) {
 	}
 }
 
+func TestAgentRunRegistryKeepsRunWhenAgentRestartsInSamePane(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	first, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "project", PaneID: "%3", PID: 100, Status: "running",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "project", PaneID: "%3", PID: 200, Status: "running",
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.ID != first.ID || restarted.PID != 200 {
+		t.Fatalf("restarted agent = %#v, want run %q with pid 200", restarted, first.ID)
+	}
+	if runs := reg.List(); len(runs) != 1 {
+		t.Fatalf("expected 1 run for one pane, got %d", len(runs))
+	}
+}
+
+func TestAgentRunRegistryReattachesManagedRunWhosePaneClosed(t *testing.T) {
+	reg, err := NewAgentRunRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC)
+	managed, err := reg.RegisterManaged(SpawnResult{
+		Task: "sparta", Session: "backend-sparta", PaneID: "%9", WorktreePath: "/tmp/backend-sparta",
+	}, AgentProviderClaude, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "backend-sparta", PaneID: "%10", PaneIndex: 1,
+		PID: 300, Status: "running", SessionPaneIDs: []string{"%9", "%10"},
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == managed.ID {
+		t.Fatal("managed run moved to another pane while its own pane was open")
+	}
+	child, err := reg.RegisterDelegated(SpawnResult{
+		Task: "child", Session: "backend-sparta", PaneID: "%11",
+	}, AgentProviderClaude, second.ID, 2, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reattached, err := reg.UpsertObserved(ObservedAgentRun{
+		Provider: AgentProviderClaude, SessionName: "backend-sparta", PaneID: "%10", PaneIndex: 0,
+		PID: 300, Status: "running", SessionPaneIDs: []string{"%10", "%11"},
+	}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reattached.ID != managed.ID || reattached.PaneID != "%10" || reattached.Task != "sparta" {
+		t.Fatalf("reattached run = %#v, want managed run %q on pane %s", reattached, managed.ID, "%10")
+	}
+	if _, ok := reg.Find(second.ID); ok {
+		t.Fatal("duplicate observed run was kept")
+	}
+	if got, _ := reg.Find(child.ID); got.ParentRunID != managed.ID {
+		t.Fatalf("child parent = %q, want %q", got.ParentRunID, managed.ID)
+	}
+}
+
 func TestMergePaneDuplicatesHealsOrphanedManagedRun(t *testing.T) {
 	spawned := time.Date(2026, 9, 2, 13, 9, 4, 0, time.UTC)
 	seen := time.Date(2026, 9, 2, 15, 39, 49, 0, time.UTC)

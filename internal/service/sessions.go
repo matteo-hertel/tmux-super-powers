@@ -95,7 +95,7 @@ type AgentProcessInfo struct {
 }
 
 // DetectPaneAgentProcess resolves the agent process for a tmux pane. It checks
-// the pane process first, then direct shell children for wrapped agent commands.
+// the pane process first, then its descendants for wrapped agent commands.
 func DetectPaneAgentProcess(session string, pane tmuxpkg.Pane, paneProcess string) AgentProcessInfo {
 	panePID := GetPanePID(session, pane)
 	provider := DetectAgentProvider(paneProcess)
@@ -133,29 +133,35 @@ func GetPanePID(session string, pane tmuxpkg.Pane) int {
 	return pid
 }
 
+// agentProcessDepth reaches an agent started through a launcher, such as npm
+// Codex: pane shell, then node, then the native binary.
+const agentProcessDepth = 3
+
 func findAgentProcessInfo(shellPid string) AgentProcessInfo {
-	pgrepCmd := exec.Command("pgrep", "-P", shellPid)
-	pgrepOut, err := pgrepCmd.Output()
-	if err != nil {
-		return AgentProcessInfo{}
-	}
-	for _, pid := range strings.Split(strings.TrimSpace(string(pgrepOut)), "\n") {
-		pid = strings.TrimSpace(pid)
-		if pid == "" {
-			continue
+	parents := []string{shellPid}
+	for depth := 0; depth < agentProcessDepth && len(parents) > 0; depth++ {
+		var children []string
+		for _, parent := range parents {
+			out, err := exec.Command("pgrep", "-P", parent).Output()
+			if err != nil {
+				continue
+			}
+			children = append(children, strings.Fields(string(out))...)
 		}
-		commCmd := exec.Command("ps", "-p", pid, "-o", "comm=")
-		commOut, err := commCmd.Output()
-		if err != nil {
-			continue
+		for _, pid := range children {
+			commOut, err := exec.Command("ps", "-p", pid, "-o", "comm=").Output()
+			if err != nil {
+				continue
+			}
+			comm := strings.TrimSpace(string(commOut))
+			provider := DetectAgentProvider(comm)
+			if provider != AgentProviderFallback || comm == "aider" {
+				var pidInt int
+				_, _ = fmt.Sscanf(pid, "%d", &pidInt)
+				return AgentProcessInfo{Provider: provider, PID: pidInt, Command: comm}
+			}
 		}
-		comm := strings.TrimSpace(string(commOut))
-		provider := DetectAgentProvider(comm)
-		if provider != AgentProviderFallback || comm == "aider" {
-			var pidInt int
-			_, _ = fmt.Sscanf(pid, "%d", &pidInt)
-			return AgentProcessInfo{Provider: provider, PID: pidInt, Command: comm}
-		}
+		parents = children
 	}
 	return AgentProcessInfo{}
 }

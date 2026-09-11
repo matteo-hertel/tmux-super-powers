@@ -48,8 +48,10 @@ Then open the manager from inside tmux:
 tsp dash
 ```
 
-The manager shows every live tmux session and marks sessions without an agent
-as idle. It takes a snapshot only when it opens or when you press `r`; it does
+The manager lists every tmux session collapsed, previewing its first pane.
+Press `l` on a session to see its agents and `h` to fold it again. Agents
+`tsp` spawned stay listed after they exit so you can clean their worktree.
+It takes a snapshot only when it opens or when you press `r`; it does
 not poll pane output or CI. Delegation starts a new child pane in the selected
 session and retained workspace instead of injecting keystrokes into the old
 process. The task panel lets you pick Claude or Codex and edit the model for
@@ -69,6 +71,7 @@ never owns workspace deletion.
 | `x` | Remove the session and its managed worktree/branch |
 | `r` | Refresh the agent and output snapshot |
 | `j` / `k` | Move through the roster |
+| `h` / `l` | Collapse or expand a session's agents |
 | `?` | Show help |
 
 Dashboard Open uses the directories configured for `tsp dir`. Dashboard New
@@ -76,7 +79,8 @@ lets you choose Claude or Codex and set the base branch before the worktree is
 created.
 
 New sessions use the same layout as `twosplit`: the configured primary agent
-runs in the left 80% and an empty shell runs in the right 20%. `tsp` recognizes
+runs in the left 80% and an empty shell runs in the right 20%. When the agent
+exits or you interrupt it, its pane stays open as a shell. `tsp` recognizes
 Claude Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
 available for delegation and deliberate cleanup. Delegated children appear
