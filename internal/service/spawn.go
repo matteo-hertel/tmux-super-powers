@@ -281,7 +281,7 @@ func BuildAgentCommand(command, prompt string) string {
 // buildLaunchCommand runs dependency install and setup inside the agent's own
 // pane so spawning returns once the worktree and session exist. Each step is
 // grouped so a multi-command setup cannot change the chain, and a failing step
-// drops the pane to a shell instead of starting the agent on a broken workspace.
+// leaves the pane at a shell instead of starting the agent on a broken workspace.
 func buildLaunchCommand(install, setup, agent string) string {
 	var steps []string
 	for _, step := range []string{install, setup} {
@@ -292,7 +292,7 @@ func buildLaunchCommand(install, setup, agent string) string {
 	if len(steps) == 0 {
 		return agent
 	}
-	return "if " + strings.Join(steps, " && ") + "; then " + agent + `; else exec "$SHELL"; fi`
+	return "if " + strings.Join(steps, " && ") + "; then " + agent + "; fi"
 }
 
 func BuildManagerAgentCommand(command, model, prompt string) string {

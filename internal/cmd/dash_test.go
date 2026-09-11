@@ -145,7 +145,7 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	}
 }
 
-func TestAgentDashboardCountsIdleTmuxSessions(t *testing.T) {
+func TestAgentDashboardHeaderCountsAgents(t *testing.T) {
 	entries := []agentEntry{
 		{
 			run:  service.AgentRun{ID: "run-agent", SessionName: "agent-session", PaneIndex: 1},
@@ -156,27 +156,21 @@ func TestAgentDashboardCountsIdleTmuxSessions(t *testing.T) {
 			live: true, sessionExists: true,
 		},
 		{
-			run:           service.AgentRun{ID: "run-idle", SessionName: "idle-session", PaneIndex: 0},
-			sessionExists: true, sessionOnly: true,
+			run:           service.AgentRun{ID: "run-exited", SessionName: "done-session", Managed: true},
+			sessionExists: true,
 		},
 	}
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	model.width = 100
 	model.height = 20
 
-	if got := model.sessionCount(); got != 2 {
-		t.Fatalf("sessionCount() = %d, want 2", got)
-	}
-	if entries[2].status() != "idle" || entries[2].provider() != "session" {
-		t.Fatalf("idle entry = %s/%s, want idle/session", entries[2].status(), entries[2].provider())
-	}
 	view := model.View()
-	if !strings.Contains(view, "2 sessions · 2 active agents") {
-		t.Fatalf("dashboard header does not show session count: %q", view)
+	if !strings.Contains(view, "3 agents · 2 running") {
+		t.Fatalf("dashboard header does not count agents: %q", view)
 	}
 }
 
-func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
+func TestAgentDashboardCompactRosterShowsSevenAgents(t *testing.T) {
 	var entries []agentEntry
 	for index := 0; index < 7; index++ {
 		entries = append(entries, agentEntry{
@@ -185,7 +179,6 @@ func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 				SessionName: fmt.Sprintf("session-%d", index),
 			},
 			sessionExists: true,
-			sessionOnly:   true,
 		})
 	}
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
@@ -197,7 +190,7 @@ func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgentsIncludesIdleTmuxSession(t *testing.T) {
+func TestDiscoverAgentsOmitsSessionWithoutAgent(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
@@ -220,13 +213,9 @@ func TestDiscoverAgentsIncludesIdleTmuxSession(t *testing.T) {
 	}
 	for _, entry := range entries {
 		if entry.run.SessionName == sessionName {
-			if !entry.sessionOnly || entry.status() != "idle" {
-				t.Fatalf("idle session entry = %#v", entry)
-			}
-			return
+			t.Fatalf("session without an agent was listed: %#v", entry)
 		}
 	}
-	t.Fatalf("idle tmux session %q was omitted", sessionName)
 }
 
 func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
@@ -792,14 +781,7 @@ func TestDiscoverAgentsMarksWorktreeSessionAsOwningItsWorkspace(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "wt")
 	run(repo, "git", "worktree", "add", "-q", "-b", "wt-branch", worktree)
 
-	sessionName := fmt.Sprintf("tsp-worktree-cleanup-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, worktree)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -843,14 +825,7 @@ func TestCleanupAgentRemovesWorktreeSessionFromDisk(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "wt")
 	run(repo, "git", "worktree", "add", "-q", "-b", "wt-cleanup-branch", worktree)
 
-	sessionName := fmt.Sprintf("tsp-worktree-removal-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", worktree)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, worktree)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -899,14 +874,7 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		t.Fatalf("git init: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	sessionName := fmt.Sprintf("tsp-plain-repo-test-%d", time.Now().UnixNano())
-	create := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", repo)
-	if output, err := create.CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
-	})
+	sessionName := startFakeAgentSession(t, repo)
 
 	registry, err := service.NewAgentRunRegistry("")
 	if err != nil {
@@ -933,4 +901,33 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		return
 	}
 	t.Fatalf("plain repo session %q was omitted", sessionName)
+}
+
+func startFakeAgentSession(t *testing.T, dir string) string {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep is not installed")
+	}
+	agent := filepath.Join(t.TempDir(), "codex")
+	if err := os.Symlink(sleep, agent); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-fake-agent-test-%d", time.Now().UnixNano())
+	if err := tmuxpkg.CreateTwoPaneSession(session, dir, "'"+agent+"' 30", ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = tmuxpkg.KillSession(session)
+	})
+	pane := tmuxpkg.Pane{Index: 0}
+	deadline := time.Now().Add(2 * time.Second)
+	for service.DetectPaneAgentProcess(session, pane, service.GetPaneProcess(session, pane)).Provider != service.AgentProviderCodex {
+		if time.Now().After(deadline) {
+			t.Fatal("fake codex agent was not detected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return session
 }

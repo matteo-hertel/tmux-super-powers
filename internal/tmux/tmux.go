@@ -204,7 +204,8 @@ func shellCommandArgs(command string) []string {
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	return []string{shell, "-c", command}
+	// Without the trap, Ctrl-C to the agent also ends this shell and tmux closes the pane.
+	return []string{shell, "-c", "trap : INT\n" + command + "\nexec \"${SHELL:-/bin/sh}\""}
 }
 
 // GetPaneCwd returns the current working directory of a session's first pane.

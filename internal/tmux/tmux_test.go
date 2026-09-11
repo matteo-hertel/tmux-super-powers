@@ -52,7 +52,7 @@ func TestSanitizeSessionName_Empty(t *testing.T) {
 func TestBuildSessionArgs_NewSession(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	args := BuildNewSessionArgs("test-session", "/tmp/dir", "nvim")
-	expected := []string{"new-session", "-d", "-s", "test-session", "-c", "/tmp/dir", "/bin/sh", "-c", "nvim"}
+	expected := []string{"new-session", "-d", "-s", "test-session", "-c", "/tmp/dir", "/bin/sh", "-c", "trap : INT\nnvim\nexec \"${SHELL:-/bin/sh}\""}
 	if len(args) != len(expected) {
 		t.Fatalf("BuildNewSessionArgs length = %d, want %d", len(args), len(expected))
 	}
@@ -60,6 +60,58 @@ func TestBuildSessionArgs_NewSession(t *testing.T) {
 		if a != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
 		}
+	}
+}
+
+func TestCreateTwoPaneSessionKeepsAgentPaneAfterInterrupt(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not installed")
+	}
+	t.Setenv("SHELL", "/bin/sh")
+	session := fmt.Sprintf("tsp-keep-pane-test-%d", time.Now().UnixNano())
+	if err := CreateTwoPaneSession(session, t.TempDir(), "sleep 30", ""); err != nil {
+		t.Fatalf("CreateTwoPaneSession() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = KillSession(session)
+	})
+	agent := Pane{Index: 0}
+	for _, pane := range Panes(session) {
+		if pane.Index == 0 {
+			agent = pane
+		}
+	}
+	pidOut, err := exec.Command("tmux", "display-message", "-t", agent.ID, "-p", "#{pane_pid}").Output()
+	if err != nil {
+		t.Fatalf("read pane pid: %v", err)
+	}
+	panePID := strings.TrimSpace(string(pidOut))
+	sleepRunning := func() bool {
+		if exec.Command("pgrep", "-P", panePID).Run() == nil {
+			return true
+		}
+		comm, err := exec.Command("ps", "-p", panePID, "-o", "comm=").Output()
+		return err == nil && strings.HasSuffix(strings.TrimSpace(string(comm)), "sleep")
+	}
+	waitForSleep := func(want bool) {
+		deadline := time.Now().Add(3 * time.Second)
+		for sleepRunning() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("sleep running = %t, want %t", !want, want)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	waitForSleep(true)
+	if err := exec.Command("tmux", "send-keys", "-t", agent.ID, "C-c").Run(); err != nil {
+		t.Fatalf("send Ctrl-C: %v", err)
+	}
+	waitForSleep(false)
+	time.Sleep(300 * time.Millisecond)
+
+	if !PaneExists(session, agent) || len(Panes(session)) != 2 {
+		t.Fatalf("agent pane closed after Ctrl-C: panes = %#v", Panes(session))
 	}
 }
 
