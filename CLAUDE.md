@@ -37,10 +37,10 @@ internal/pathutil/           Path expansion and directory helpers
 Use `.interface-design/system.md` as the source of truth for dashboard layout,
 tokens, hierarchy, reusable controls, and keyboard interaction patterns.
 
-The dashboard does not own a timer. It lists every tmux session with its agents
-nested beneath, plus retained managed runs under their closed session. Session
-rows are not registry runs. It captures output once at startup and once per
-explicit refresh/action.
+The dashboard does not own a timer. It lists every tmux session, collapsed by
+default; `l` expands a session to show its agents and `h` folds it. Retained
+managed runs sit under their closed session. Session rows are not registry
+runs. It captures output once at startup and once per explicit refresh/action.
 
 ## CLI surface
 

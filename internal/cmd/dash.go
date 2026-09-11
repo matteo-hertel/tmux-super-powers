@@ -134,9 +134,13 @@ func (a agentEntry) workspacePath() string {
 
 func (a agentEntry) key() string {
 	if a.isSession {
-		return "session:" + a.run.SessionName
+		return sessionKey(a.run.SessionName)
 	}
 	return a.run.ID
+}
+
+func sessionKey(name string) string {
+	return "session:" + name
 }
 
 // ownsWorkspace reports whether cleaning up this entry should also remove its
@@ -227,8 +231,15 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 				isWorktree:    gitInfo.IsWorktree,
 			})
 		}
-		if len(entries) == sessionAgents && len(panes) > 0 {
-			session.output = service.CapturePanePreview(sessionName, panes[0])
+		if len(panes) > 0 {
+			for _, agent := range entries[sessionAgents:] {
+				if agent.run.PaneID == panes[0].ID {
+					session.output = agent.output
+				}
+			}
+			if session.output == "" {
+				session.output = service.CapturePanePreview(sessionName, panes[0])
+			}
 		}
 		sessions = append(sessions, session)
 	}
@@ -405,6 +416,7 @@ type agentDashboardModel struct {
 	directoryCursor     int
 	directoryError      string
 	openDirectory       string
+	expanded            map[string]bool
 }
 
 type agentsRefreshedMsg struct {
@@ -459,6 +471,7 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 		baseInput:      baseInput,
 		directoryInput: directoryInput,
 		managerAgent:   managerAgent,
+		expanded:       make(map[string]bool),
 	}
 }
 
@@ -466,11 +479,28 @@ func (m agentDashboardModel) Init() tea.Cmd {
 	return nil
 }
 
+func (m agentDashboardModel) rows() []agentEntry {
+	sessions := make(map[string]bool)
+	for _, entry := range m.agents {
+		if entry.isSession {
+			sessions[entry.run.SessionName] = true
+		}
+	}
+	rows := make([]agentEntry, 0, len(m.agents))
+	for _, entry := range m.agents {
+		if entry.isSession || m.expanded[entry.run.SessionName] || !sessions[entry.run.SessionName] {
+			rows = append(rows, entry)
+		}
+	}
+	return rows
+}
+
 func (m agentDashboardModel) selected() (agentEntry, bool) {
-	if len(m.agents) == 0 || m.cursor < 0 || m.cursor >= len(m.agents) {
+	rows := m.rows()
+	if m.cursor < 0 || m.cursor >= len(rows) {
 		return agentEntry{}, false
 	}
-	return m.agents[m.cursor], true
+	return rows[m.cursor], true
 }
 
 func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -506,7 +536,7 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.agents = msg.agents
 		if msg.selectedID != "" {
 			m.restoreSelection(msg.selectedID)
-		} else if m.cursor >= len(m.agents) && m.cursor > 0 {
+		} else if m.cursor >= len(m.rows()) && m.cursor > 0 {
 			m.cursor--
 		}
 		m.statusMessage = msg.message
@@ -535,6 +565,10 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 	case "down", "j":
 		m.moveCursor(1)
+	case "right", "l":
+		m.expandSelected()
+	case "left", "h":
+		m.collapseSelected()
 	case "enter":
 		if selected, ok := m.selected(); ok && selected.sessionExists {
 			m.attachSession = selected.run.SessionName
@@ -936,24 +970,55 @@ func (m *agentDashboardModel) closeModal() {
 }
 
 func (m *agentDashboardModel) moveCursor(delta int) {
-	if len(m.agents) == 0 {
+	rows := len(m.rows())
+	if rows == 0 {
 		return
 	}
-	m.cursor = (m.cursor + delta + len(m.agents)) % len(m.agents)
+	m.cursor = (m.cursor + delta + rows) % rows
 }
 
 func (m *agentDashboardModel) restoreSelection(id string) {
 	if id != "" {
-		for index := range m.agents {
-			if m.agents[index].key() == id {
+		for _, entry := range m.agents {
+			if !entry.isSession && entry.key() == id {
+				m.expanded[entry.run.SessionName] = true
+			}
+		}
+		for index, row := range m.rows() {
+			if row.key() == id {
 				m.cursor = index
 				return
 			}
 		}
 	}
-	if m.cursor >= len(m.agents) {
-		m.cursor = max(0, len(m.agents)-1)
+	if rows := len(m.rows()); m.cursor >= rows {
+		m.cursor = max(0, rows-1)
 	}
+}
+
+func (m *agentDashboardModel) expandSelected() {
+	selected, ok := m.selected()
+	if !ok || !selected.isSession {
+		return
+	}
+	name := selected.run.SessionName
+	if agents, _ := m.sessionAgentCounts(name); agents == 0 {
+		return
+	}
+	if m.expanded[name] {
+		m.moveCursor(1)
+		return
+	}
+	m.expanded[name] = true
+}
+
+func (m *agentDashboardModel) collapseSelected() {
+	selected, ok := m.selected()
+	if !ok {
+		return
+	}
+	delete(m.expanded, selected.run.SessionName)
+	m.restoreSelection(sessionKey(selected.run.SessionName))
 }
 
 func refreshAgentsCmd(registry *service.AgentRunRegistry) tea.Cmd {
@@ -1200,7 +1265,7 @@ func (m agentDashboardModel) renderDashboard() string {
 	if len(m.agents) == 0 {
 		body = m.renderEmpty(bodyHeight)
 	} else if m.width < 86 {
-		listHeight := min(bodyHeight/2, max(5, len(m.agents)+1))
+		listHeight := min(bodyHeight/2, max(5, len(m.rows())+1))
 		body = lipgloss.JoinVertical(
 			lipgloss.Left,
 			m.renderRoster(m.width, listHeight, true),
@@ -1217,9 +1282,9 @@ func (m agentDashboardModel) renderDashboard() string {
 		)
 	}
 
-	footerText := "o open   n new   d delegate   enter attach   s stop   x clean   r refresh   ? help   q quit"
+	footerText := "o open   n new   d delegate   enter attach   h/l fold   s stop   x clean   r refresh   ? help   q quit"
 	if m.width < 86 {
-		footerText = "o open  n new  d delegate  ↵ attach  s stop  x clean  r refresh  ? help  q quit"
+		footerText = "o open  n new  d delegate  ↵ attach  h/l fold  s stop  x clean  r refresh  ? help  q quit"
 	}
 	if m.busy {
 		footerText = "◌ " + m.statusMessage
@@ -1247,8 +1312,7 @@ func (m agentDashboardModel) rosterCounts() (sessions, agents, running int) {
 	return sessions, agents, running
 }
 
-func (m agentDashboardModel) sessionSummary(name string) string {
-	agents, running := 0, 0
+func (m agentDashboardModel) sessionAgentCounts(name string) (agents, running int) {
 	for _, entry := range m.agents {
 		if entry.isSession || entry.run.SessionName != name {
 			continue
@@ -1258,6 +1322,21 @@ func (m agentDashboardModel) sessionSummary(name string) string {
 			running++
 		}
 	}
+	return agents, running
+}
+
+func (m agentDashboardModel) sessionFold(name string) string {
+	if agents, _ := m.sessionAgentCounts(name); agents == 0 {
+		return " "
+	}
+	if m.expanded[name] {
+		return "▾"
+	}
+	return "▸"
+}
+
+func (m agentDashboardModel) sessionSummary(name string) string {
+	agents, running := m.sessionAgentCounts(name)
 	if agents == 0 {
 		return "no agents"
 	}
@@ -1286,18 +1365,19 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 	if compact {
 		rowsVisible = max(1, height-1)
 	}
+	rows := m.rows()
 	start := 0
 	if m.cursor >= rowsVisible {
 		start = m.cursor - rowsVisible + 1
 	}
-	end := min(len(m.agents), start+rowsVisible)
+	end := min(len(rows), start+rowsVisible)
 	heading := "SESSIONS"
-	if len(m.agents) > rowsVisible {
-		heading = fmt.Sprintf("SESSIONS  %d–%d / %d", start+1, end, len(m.agents))
+	if len(rows) > rowsVisible {
+		heading = fmt.Sprintf("SESSIONS  %d–%d / %d", start+1, end, len(rows))
 	}
 	lines := []string{lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render(heading)}
 	for index := start; index < end; index++ {
-		entry := m.agents[index]
+		entry := rows[index]
 		indent := strings.Repeat("  ", min(m.agentDepth(entry), 3))
 		textWidth := max(8, contentWidth-len(indent)-3)
 		statusColor := dashFaint
@@ -1310,7 +1390,7 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 			statusGlyph = "◌"
 		}
 		glyph := lipgloss.NewStyle().Foreground(statusColor).Render(statusGlyph)
-		rowHead := ansi.Truncate(entry.run.SessionName, textWidth, "…")
+		rowHead := m.sessionFold(entry.run.SessionName) + " " + ansi.Truncate(entry.run.SessionName, textWidth-2, "…")
 		rowLabel := m.sessionSummary(entry.run.SessionName)
 		headStyle, labelStyle := dashTitleStyle, dashMetaStyle
 		if !entry.isSession {
@@ -1415,7 +1495,8 @@ func (m agentDashboardModel) renderDetail(width, height int) string {
 		dashKeyStyle.Render("s") + " stop   " + dashKeyStyle.Render("x") + " clean"
 	if agent.isSession {
 		workspace = dashMetaStyle.Render("agents    ") + m.sessionSummary(agent.run.SessionName)
-		controls = dashKeyStyle.Render("enter") + " attach   " + dashKeyStyle.Render("x") + " remove session"
+		controls = dashKeyStyle.Render("enter") + " attach   " + dashKeyStyle.Render("h / l") + " fold   " +
+			dashKeyStyle.Render("x") + " remove session"
 	}
 	lines = append(lines,
 		workspace,
@@ -1625,6 +1706,7 @@ func (m agentDashboardModel) renderHelp() string {
 		"  " + dashKeyStyle.Render("n") + "          Spawn an agent in a project",
 		"  " + dashKeyStyle.Render("d") + "          Delegate work or request a lifecycle action",
 		"  " + dashKeyStyle.Render("enter") + "      Attach to the session or agent pane",
+		"  " + dashKeyStyle.Render("h / l") + "      Collapse or expand a session's agents",
 		"  " + dashKeyStyle.Render("s") + "          Interrupt the agent process",
 		"  " + dashKeyStyle.Render("x") + "          Remove the selected pane, session, or workspace",
 		"  " + dashKeyStyle.Render("r") + "          Refresh the agent/output snapshot",

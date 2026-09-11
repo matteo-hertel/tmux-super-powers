@@ -154,6 +154,7 @@ func TestAgentDashboardRosterRowsDoNotWrap(t *testing.T) {
 			branch: long, live: true, sessionExists: true,
 		},
 	}, &config.Config{}, nil, "/repo")
+	model.expanded[long] = true
 
 	lines := strings.Split(model.renderRoster(40, 20, false), "\n")
 	if !strings.Contains(lines[4], "CLAUDE") {
@@ -455,6 +456,48 @@ func TestGroupBySessionNestsAgentsUnderTheirSession(t *testing.T) {
 	}
 	if rows[3].status() != "missing" || rows[3].branch != "spawn/gone" {
 		t.Fatalf("row for a closed session = %#v", rows[3])
+	}
+}
+
+func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
+	entries := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},
+		{run: service.AgentRun{ID: "run-a", SessionName: "alpha"}, live: true, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "beta"}, sessionExists: true},
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	press := func(m agentDashboardModel, key string) agentDashboardModel {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		return next.(agentDashboardModel)
+	}
+	visible := func(m agentDashboardModel) string {
+		var keys []string
+		for _, row := range m.rows() {
+			keys = append(keys, row.key())
+		}
+		return strings.Join(keys, ",")
+	}
+
+	if got := visible(model); got != "session:alpha,session:beta" {
+		t.Fatalf("collapsed rows = %s", got)
+	}
+	model = press(model, "l")
+	if got := visible(model); got != "session:alpha,run-a,session:beta" {
+		t.Fatalf("expanded rows = %s", got)
+	}
+	model = press(model, "j")
+	if selected, _ := model.selected(); selected.key() != "run-a" {
+		t.Fatalf("selected after j = %q, want run-a", selected.key())
+	}
+	model = press(model, "h")
+	if selected, _ := model.selected(); selected.key() != "session:alpha" || visible(model) != "session:alpha,session:beta" {
+		t.Fatalf("h did not fold back to the session: selected %q, rows %s", selected.key(), visible(model))
+	}
+
+	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Delegated agent started", selectedID: "run-a"})
+	model = next.(agentDashboardModel)
+	if selected, _ := model.selected(); selected.key() != "run-a" {
+		t.Fatalf("new agent in a collapsed session was not revealed: %q", selected.key())
 	}
 }
 

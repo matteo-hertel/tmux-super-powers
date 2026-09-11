@@ -65,8 +65,12 @@ Color communicates state or focus. Do not add decorative hues.
 
 ### Dashboard roster
 
-- Every tmux session is a row. Its agents sit below it with two-column
-  indentation; a closed session with retained agents keeps a missing row.
+- Every tmux session is a row, collapsed by default, and previews its first
+  pane. `l` or right expands it to show its agents with two-column
+  indentation; `h` or left folds it and selects the session row. A closed
+  session with retained agents keeps a missing row.
+- Session rows mark `▸` collapsed and `▾` expanded; sessions without agents
+  have no marker. Selecting a new agent after an action expands its session.
 - Wide session rows use three lines: session name, agent summary, then branch
   or project path. Wide agent rows use provider/state, task or pane, then
   branch or project path.
