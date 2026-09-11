@@ -15,7 +15,7 @@ personal invocation frequency.
 | `tsp project` | Keep | Single canonical project creator. |
 | `tsp list` (`txl`) | Keep | Fast tmux session picker without the controls and detail view in the dashboard. |
 | `tsp spawn` | Keep and refactor | Core agent launcher; now shares the service path with dashboard New, whose form selects Claude/Codex and a base branch, supports command overrides, uses the standard 80/20 agent-and-shell layout, and records managed runs. |
-| `tsp dash` | Keep and replace | Now an on-demand agent manager: list agents, spawn, delegate configurable Claude/Codex child panes, attach, interrupt, clean, and refresh. It does not inject follow-up keystrokes into agent terminals. |
+| `tsp dash` | Keep and replace | Now an on-demand session and agent manager: jump to any session, spawn, delegate configurable Claude/Codex child panes, attach, interrupt, clean, and refresh. It does not inject follow-up keystrokes into agent terminals. |
 | `tsp rm` | Keep | Session-oriented cleanup with worktree awareness. |
 | `tsp cleanup` | Keep | Finds orphaned directories/worktrees under the configured worktree base even when no tmux session exists. |
 | `tsp wtx-new` | Keep | Manual multi-worktree creation with the same configured agent-and-shell session layout as other launch commands. |

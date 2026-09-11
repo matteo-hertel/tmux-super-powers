@@ -65,11 +65,20 @@ Color communicates state or focus. Do not add decorative hues.
 
 ### Dashboard roster
 
-- Wide rows use three lines: provider/state, task or session title, then branch
-  or pane metadata.
-- Narrow rows use one line: status glyph, provider, then title.
+- Every tmux session is a row. Its agents sit below it with two-column
+  indentation; a closed session with retained agents keeps a missing row.
+- Wide session rows use three lines: session name, agent summary, then branch
+  or project path. Wide agent rows use provider/state, task or pane, then
+  branch or project path.
+- Narrow rows use one line: status glyph, session name or provider, then
+  summary or title.
 - Status glyphs are `●` running, `◌` present but idle/exited, and `○` missing.
-- Delegated runs sit directly below their parent with two-column indentation.
+  A session row is running when any of its agents runs.
+- `Enter` on a session row switches to the session without choosing a pane.
+  Stop and delegate need an agent row; `x` on a session row removes only the
+  tmux session.
+- Delegated runs sit directly below their parent with two more columns of
+  indentation.
 - The selected row uses `dashSelected`; unselected rows stay on the canvas.
 
 ### Open project picker

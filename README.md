@@ -48,8 +48,8 @@ Then open the manager from inside tmux:
 tsp dash
 ```
 
-The manager lists only agents: agent panes in any tmux session, plus agents
-`tsp` spawned that stay listed after they exit so you can clean their worktree.
+The manager lists every tmux session with its agents nested beneath. Agents
+`tsp` spawned stay listed after they exit so you can clean their worktree.
 It takes a snapshot only when it opens or when you press `r`; it does
 not poll pane output or CI. Delegation starts a new child pane in the selected
 session and retained workspace instead of injecting keystrokes into the old

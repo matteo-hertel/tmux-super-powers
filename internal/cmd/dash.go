@@ -25,9 +25,9 @@ var dashCmd = &cobra.Command{
 	Long: `Manage local Claude Code, Codex, and other terminal agents.
 
 The dashboard takes an on-demand snapshot instead of polling agent output or CI.
-List running and retained agents, open configured projects, spawn agents,
-delegate follow-up work to inexpensive child panes, attach, stop a process, or
-remove a managed worktree from one place.`,
+Jump to any tmux session, see the agents running in it, open configured
+projects, spawn agents, delegate follow-up work to inexpensive child panes,
+stop a process, or remove a managed worktree from one place.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !tmuxpkg.IsInsideTmux() {
 			fmt.Fprintln(os.Stderr, "Error: dash must be run inside a tmux session")
@@ -87,6 +87,7 @@ remove a managed worktree from one place.`,
 }
 
 type agentEntry struct {
+	isSession     bool
 	run           service.AgentRun
 	branch        string
 	worktreePath  string
@@ -108,6 +109,8 @@ func (a agentEntry) status() string {
 	switch {
 	case a.live:
 		return "running"
+	case a.isSession && a.sessionExists:
+		return "idle"
 	case a.sessionExists:
 		return "exited"
 	default:
@@ -116,6 +119,9 @@ func (a agentEntry) status() string {
 }
 
 func (a agentEntry) provider() string {
+	if a.isSession {
+		return "session"
+	}
 	if a.run.Provider == "" || a.run.Provider == service.AgentProviderFallback {
 		return "agent"
 	}
@@ -126,11 +132,18 @@ func (a agentEntry) workspacePath() string {
 	return firstNonEmpty(a.worktreePath, a.run.WorktreePath, a.run.CWD)
 }
 
+func (a agentEntry) key() string {
+	if a.isSession {
+		return "session:" + a.run.SessionName
+	}
+	return a.run.ID
+}
+
 // ownsWorkspace reports whether cleaning up this entry should also remove its
 // directory and branch. Managed root runs own the worktree they were spawned
 // into; any other root session owns one when it sits in a git worktree itself.
 func (a agentEntry) ownsWorkspace() bool {
-	if a.run.ParentRunID != "" || a.worktreePath == "" {
+	if a.isSession || a.run.ParentRunID != "" || a.worktreePath == "" {
 		return false
 	}
 	return a.run.Managed || a.isWorktree
@@ -148,12 +161,22 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 	now := time.Now().UTC()
 	sessionSet := make(map[string]bool, len(sessionNames))
 	seenRuns := make(map[string]bool)
-	var entries []agentEntry
+	var sessions, entries []agentEntry
 
 	for _, sessionName := range sessionNames {
 		sessionSet[sessionName] = true
 		gitInfo := service.DetectSessionGitInfoFull(sessionName)
 		panes := tmuxpkg.Panes(sessionName)
+		session := agentEntry{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: sessionName, CWD: gitInfo.Cwd},
+			branch:        gitInfo.Branch,
+			worktreePath:  gitInfo.WorktreePath,
+			gitPath:       gitInfo.GitPath,
+			sessionExists: true,
+			isWorktree:    gitInfo.IsWorktree,
+		}
+		sessionAgents := len(entries)
 		paneIDs := make([]string, 0, len(panes))
 		for _, pane := range panes {
 			paneIDs = append(paneIDs, pane.ID)
@@ -204,6 +227,10 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 				isWorktree:    gitInfo.IsWorktree,
 			})
 		}
+		if len(entries) == sessionAgents && len(panes) > 0 {
+			session.output = service.CapturePanePreview(sessionName, panes[0])
+		}
+		sessions = append(sessions, session)
 	}
 
 	if err := registry.MarkUnseenStopped(seenRuns, now); err != nil {
@@ -233,7 +260,7 @@ func discoverAgents(registry *service.AgentRunRegistry) ([]agentEntry, error) {
 		entries = append(entries, entry)
 	}
 
-	return sortAgentEntries(entries), nil
+	return groupBySession(sessions, entries), nil
 }
 
 func sortAgentEntries(entries []agentEntry) []agentEntry {
@@ -288,6 +315,39 @@ func sortAgentEntries(entries []agentEntry) []agentEntry {
 		appendTree(entry)
 	}
 	return ordered
+}
+
+func groupBySession(sessions, agents []agentEntry) []agentEntry {
+	listed := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		listed[session.run.SessionName] = true
+	}
+	members := make(map[string][]agentEntry)
+	for _, agent := range sortAgentEntries(agents) {
+		name := agent.run.SessionName
+		if !listed[name] {
+			listed[name] = true
+			sessions = append(sessions, agentEntry{
+				isSession: true,
+				run:       service.AgentRun{SessionName: name, CWD: agent.run.CWD},
+				branch:    agent.branch,
+			})
+		}
+		members[name] = append(members[name], agent)
+	}
+	rows := make([]agentEntry, 0, len(sessions)+len(agents))
+	for _, session := range sessions {
+		group := members[session.run.SessionName]
+		for _, agent := range group {
+			session.live = session.live || agent.live
+		}
+		if session.output == "" && len(group) > 0 {
+			session.output = group[0].output
+		}
+		rows = append(rows, session)
+		rows = append(rows, group...)
+	}
+	return rows
 }
 
 func firstNonEmpty(values ...string) string {
@@ -428,11 +488,12 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		selectedID := ""
 		if selected, ok := m.selected(); ok {
-			selectedID = selected.run.ID
+			selectedID = selected.key()
 		}
 		m.agents = msg.agents
 		m.restoreSelection(selectedID)
-		m.statusMessage = fmt.Sprintf("Snapshot refreshed · %d agents", len(m.agents))
+		sessions, _, _ := m.rosterCounts()
+		m.statusMessage = fmt.Sprintf("Snapshot refreshed · %d sessions", sessions)
 		return m, nil
 
 	case agentActionDoneMsg:
@@ -478,7 +539,7 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if selected, ok := m.selected(); ok && selected.sessionExists {
 			m.attachSession = selected.run.SessionName
 			m.attachPane = runPane(selected.run)
-			if selected.run.ParentRunID != "" && !selected.live {
+			if selected.isSession || (selected.run.ParentRunID != "" && !selected.live) {
 				m.attachPane = tmuxpkg.Pane{Index: -1}
 			}
 			return m, tea.Quit
@@ -489,7 +550,7 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openDirectoryPicker()
 	case "d":
 		selected, ok := m.selected()
-		if !ok {
+		if !ok || selected.isSession {
 			m.statusMessage = "Select an agent to delegate from"
 			break
 		}
@@ -499,7 +560,7 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.openDelegate()
 	case "s":
-		if selected, ok := m.selected(); ok && selected.live {
+		if selected, ok := m.selected(); ok && !selected.isSession && selected.live {
 			m.mode = dashAgentsConfirmStop
 		} else {
 			m.statusMessage = "Select a running agent to stop"
@@ -884,7 +945,7 @@ func (m *agentDashboardModel) moveCursor(delta int) {
 func (m *agentDashboardModel) restoreSelection(id string) {
 	if id != "" {
 		for index := range m.agents {
-			if m.agents[index].run.ID == id {
+			if m.agents[index].key() == id {
 				m.cursor = index
 				return
 			}
@@ -1126,17 +1187,12 @@ func (m agentDashboardModel) View() string {
 }
 
 func (m agentDashboardModel) renderDashboard() string {
-	running := 0
-	for _, agent := range m.agents {
-		if agent.live {
-			running++
-		}
-	}
+	sessions, agents, running := m.rosterCounts()
 	header := lipgloss.NewStyle().
 		Background(dashCanvas).
 		Foreground(dashInk).
 		Padding(0, 1).
-		Render(fmt.Sprintf("tsp / agents   %d agents · %d running", len(m.agents), running))
+		Render(fmt.Sprintf("tsp / sessions   %d sessions · %d agents · %d running", sessions, agents, running))
 	project := dashMetaStyle.Render("spawn target  " + m.cwd)
 	bodyHeight := max(5, m.height-5)
 
@@ -1174,11 +1230,49 @@ func (m agentDashboardModel) renderDashboard() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, project, body, footer)
 }
 
+func (m agentDashboardModel) rosterCounts() (sessions, agents, running int) {
+	for _, entry := range m.agents {
+		switch {
+		case entry.isSession:
+			if entry.sessionExists {
+				sessions++
+			}
+		case entry.live:
+			agents++
+			running++
+		default:
+			agents++
+		}
+	}
+	return sessions, agents, running
+}
+
+func (m agentDashboardModel) sessionSummary(name string) string {
+	agents, running := 0, 0
+	for _, entry := range m.agents {
+		if entry.isSession || entry.run.SessionName != name {
+			continue
+		}
+		agents++
+		if entry.live {
+			running++
+		}
+	}
+	if agents == 0 {
+		return "no agents"
+	}
+	noun := "agents"
+	if agents == 1 {
+		noun = "agent"
+	}
+	return fmt.Sprintf("%d %s · %d running", agents, noun, running)
+}
+
 func (m agentDashboardModel) renderEmpty(height int) string {
 	lines := []string{
 		"",
-		dashTitleStyle.Render("No agents"),
-		dashMetaStyle.Render("Spawn an agent or open a project, then refresh the snapshot."),
+		dashTitleStyle.Render("No tmux sessions or agents"),
+		dashMetaStyle.Render("Open a project or spawn an agent, then refresh the snapshot."),
 		"",
 		dashKeyStyle.Render("o") + dashMetaStyle.Render("  open project"),
 		dashKeyStyle.Render("n") + dashMetaStyle.Render("  new agent"),
@@ -1197,51 +1291,54 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 		start = m.cursor - rowsVisible + 1
 	}
 	end := min(len(m.agents), start+rowsVisible)
-	heading := "AGENTS"
+	heading := "SESSIONS"
 	if len(m.agents) > rowsVisible {
-		heading = fmt.Sprintf("AGENTS  %d–%d / %d", start+1, end, len(m.agents))
+		heading = fmt.Sprintf("SESSIONS  %d–%d / %d", start+1, end, len(m.agents))
 	}
 	lines := []string{lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render(heading)}
 	for index := start; index < end; index++ {
-		agent := m.agents[index]
-		depth := m.agentDepth(agent)
-		indent := strings.Repeat("  ", min(depth, 3))
+		entry := m.agents[index]
+		indent := strings.Repeat("  ", min(m.agentDepth(entry), 3))
+		textWidth := max(8, contentWidth-len(indent)-2)
 		statusColor := dashFaint
 		statusGlyph := "○"
-		if agent.live {
+		if entry.live {
 			statusColor = dashMint
 			statusGlyph = "●"
-		} else if agent.sessionExists {
+		} else if entry.sessionExists {
 			statusColor = dashAmber
 			statusGlyph = "◌"
 		}
-		provider := strings.ToUpper(agent.provider())
-		if depth > 0 {
-			provider += " · DELEGATED"
-		}
-		title := ansi.Truncate(agent.title(), max(8, contentWidth-len(indent)-2), "…")
-		meta := fmt.Sprintf("%s · pane %d", agent.run.SessionName, agent.run.PaneIndex)
-		if agent.branch != "" {
-			meta = agent.branch
+		glyph := lipgloss.NewStyle().Foreground(statusColor).Render(statusGlyph)
+		rowHead := ansi.Truncate(entry.run.SessionName, textWidth, "…")
+		rowLabel := m.sessionSummary(entry.run.SessionName)
+		headStyle, labelStyle := dashTitleStyle, dashMetaStyle
+		if !entry.isSession {
+			rowHead = strings.ToUpper(entry.provider())
+			if entry.run.ParentRunID != "" {
+				rowHead += " · DELEGATED"
+			}
+			rowLabel = firstNonEmpty(strings.TrimSpace(entry.run.Task), fmt.Sprintf("pane %d", entry.run.PaneIndex))
+			headStyle, labelStyle = lipgloss.NewStyle().Foreground(dashMuted).Bold(true), dashTitleStyle
 		}
 		row := fmt.Sprintf(
 			"%s%s %s\n%s  %s\n%s  %s",
 			indent,
-			lipgloss.NewStyle().Foreground(statusColor).Render(statusGlyph),
-			lipgloss.NewStyle().Foreground(dashMuted).Bold(true).Render(provider),
+			glyph,
+			headStyle.Render(rowHead),
 			indent,
-			dashTitleStyle.Render(title),
+			labelStyle.Render(ansi.Truncate(rowLabel, textWidth, "…")),
 			indent,
-			dashMetaStyle.Render(ansi.Truncate(meta, max(8, contentWidth-2), "…")),
+			dashMetaStyle.Render(ansi.Truncate(firstNonEmpty(entry.branch, entry.run.CWD), textWidth, "…")),
 		)
 		if compact {
-			labelWidth := max(8, contentWidth-len(indent)-len(provider)-4)
+			labelWidth := max(8, contentWidth-len(indent)-lipgloss.Width(rowHead)-4)
 			row = fmt.Sprintf(
 				"%s%s %s  %s",
 				indent,
-				lipgloss.NewStyle().Foreground(statusColor).Render(statusGlyph),
-				lipgloss.NewStyle().Foreground(dashMuted).Bold(true).Render(provider),
-				dashTitleStyle.Render(ansi.Truncate(agent.title(), labelWidth, "…")),
+				glyph,
+				headStyle.Render(rowHead),
+				labelStyle.Render(ansi.Truncate(rowLabel, labelWidth, "…")),
 			)
 		}
 		style := lipgloss.NewStyle().Width(contentWidth).PaddingLeft(1)
@@ -1254,8 +1351,11 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 }
 
 func (m agentDashboardModel) agentDepth(agent agentEntry) int {
+	if agent.isSession {
+		return 0
+	}
 	parentID := agent.run.ParentRunID
-	depth := 0
+	depth := 1
 	seen := make(map[string]bool)
 	for parentID != "" && !seen[parentID] {
 		seen[parentID] = true
@@ -1310,10 +1410,15 @@ func (m agentDashboardModel) renderDetail(width, height int) string {
 	} else if agent.run.ParentRunID == "" {
 		workspaceMode = "session"
 	}
+	workspace := dashMetaStyle.Render("workspace ") + workspaceMode
 	controls := dashKeyStyle.Render("d") + " delegate   " + dashKeyStyle.Render("enter") + " attach   " +
 		dashKeyStyle.Render("s") + " stop   " + dashKeyStyle.Render("x") + " clean"
+	if agent.isSession {
+		workspace = dashMetaStyle.Render("agents    ") + m.sessionSummary(agent.run.SessionName)
+		controls = dashKeyStyle.Render("enter") + " attach   " + dashKeyStyle.Render("x") + " remove session"
+	}
 	lines = append(lines,
-		dashMetaStyle.Render("workspace ")+workspaceMode,
+		workspace,
 		"",
 		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("CONTROLS"),
 		controls,
@@ -1495,7 +1600,7 @@ func (m agentDashboardModel) renderConfirmation(cleanup bool) string {
 				agent.worktreePath + " and branch " + firstNonEmpty(agent.branch, "—") + " from disk."
 		} else if agent.run.ParentRunID == "" {
 			title = "Remove this tmux session?"
-			description = "Kills this tmux session. Files on disk remain in place."
+			description = "Kills this tmux session and every agent in it. Files on disk remain in place."
 		} else {
 			title = "Remove this delegated run?"
 			description = "Kills this run and its children. The shared parent workspace remains in place."
@@ -1513,13 +1618,13 @@ func (m agentDashboardModel) renderConfirmation(cleanup bool) string {
 
 func (m agentDashboardModel) renderHelp() string {
 	lines := []string{
-		dashTitleStyle.Render("Agent manager"),
-		dashMetaStyle.Render("Manage agents and their workspaces, and delegate follow-up jobs."),
+		dashTitleStyle.Render("Session and agent manager"),
+		dashMetaStyle.Render("Jump to any tmux session, manage its agents and workspaces, and delegate follow-up jobs."),
 		"",
 		"  " + dashKeyStyle.Render("o") + "          Open a configured directory",
 		"  " + dashKeyStyle.Render("n") + "          Spawn an agent in a project",
 		"  " + dashKeyStyle.Render("d") + "          Delegate work or request a lifecycle action",
-		"  " + dashKeyStyle.Render("enter") + "      Attach to the tmux session",
+		"  " + dashKeyStyle.Render("enter") + "      Attach to the session or agent pane",
 		"  " + dashKeyStyle.Render("s") + "          Interrupt the agent process",
 		"  " + dashKeyStyle.Render("x") + "          Remove the selected pane, session, or workspace",
 		"  " + dashKeyStyle.Render("r") + "          Refresh the agent/output snapshot",

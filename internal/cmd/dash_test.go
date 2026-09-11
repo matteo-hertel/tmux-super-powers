@@ -145,8 +145,9 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	}
 }
 
-func TestAgentDashboardHeaderCountsAgents(t *testing.T) {
+func TestAgentDashboardHeaderCountsSessionsAndAgents(t *testing.T) {
 	entries := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "agent-session"}, live: true, sessionExists: true},
 		{
 			run:  service.AgentRun{ID: "run-agent", SessionName: "agent-session", PaneIndex: 1},
 			live: true, sessionExists: true,
@@ -155,6 +156,7 @@ func TestAgentDashboardHeaderCountsAgents(t *testing.T) {
 			run:  service.AgentRun{ID: "run-child", SessionName: "agent-session", PaneIndex: 2},
 			live: true, sessionExists: true,
 		},
+		{isSession: true, run: service.AgentRun{SessionName: "done-session"}, sessionExists: true},
 		{
 			run:           service.AgentRun{ID: "run-exited", SessionName: "done-session", Managed: true},
 			sessionExists: true,
@@ -165,17 +167,17 @@ func TestAgentDashboardHeaderCountsAgents(t *testing.T) {
 	model.height = 20
 
 	view := model.View()
-	if !strings.Contains(view, "3 agents · 2 running") {
-		t.Fatalf("dashboard header does not count agents: %q", view)
+	if !strings.Contains(view, "2 sessions · 3 agents · 2 running") {
+		t.Fatalf("dashboard header does not count sessions and agents: %q", view)
 	}
 }
 
-func TestAgentDashboardCompactRosterShowsSevenAgents(t *testing.T) {
+func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 	var entries []agentEntry
 	for index := 0; index < 7; index++ {
 		entries = append(entries, agentEntry{
+			isSession: true,
 			run: service.AgentRun{
-				ID:          fmt.Sprintf("run-%d", index),
 				SessionName: fmt.Sprintf("session-%d", index),
 			},
 			sessionExists: true,
@@ -190,7 +192,7 @@ func TestAgentDashboardCompactRosterShowsSevenAgents(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgentsOmitsSessionWithoutAgent(t *testing.T) {
+func TestDiscoverAgentsListsSessionWithoutAgent(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not installed")
 	}
@@ -211,10 +213,14 @@ func TestDiscoverAgentsOmitsSessionWithoutAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverAgents: %v", err)
 	}
+	var rows []agentEntry
 	for _, entry := range entries {
 		if entry.run.SessionName == sessionName {
-			t.Fatalf("session without an agent was listed: %#v", entry)
+			rows = append(rows, entry)
 		}
+	}
+	if len(rows) != 1 || !rows[0].isSession || rows[0].status() != "idle" {
+		t.Fatalf("session rows = %#v, want one idle session row", rows)
 	}
 }
 
@@ -406,6 +412,50 @@ func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
 	got := next.(agentDashboardModel)
 	if got.attachSession != "shared-session" || got.attachPane.Index != 3 {
 		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane.Index)
+	}
+}
+
+func TestGroupBySessionNestsAgentsUnderTheirSession(t *testing.T) {
+	sessions := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "idle"}, sessionExists: true, output: "idle prompt"},
+	}
+	agents := []agentEntry{
+		{run: service.AgentRun{ID: "run-gone", SessionName: "gone", Managed: true}, branch: "spawn/gone"},
+		{run: service.AgentRun{ID: "run-alpha", SessionName: "alpha"}, live: true, sessionExists: true, output: "alpha output"},
+	}
+
+	rows := groupBySession(sessions, agents)
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.key())
+	}
+	want := "session:alpha,run-alpha,session:idle,session:gone,run-gone"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("rows = %v, want %s", got, want)
+	}
+	if !rows[0].live || rows[0].output != "alpha output" {
+		t.Fatalf("session row did not take its agent's state: %#v", rows[0])
+	}
+	if rows[3].status() != "missing" || rows[3].branch != "spawn/gone" {
+		t.Fatalf("row for a closed session = %#v", rows[3])
+	}
+}
+
+func TestAgentDashboardSessionRowAttachesWithoutPaneAndCannotStop(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},
+	}, &config.Config{}, nil, "/repo")
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := next.(agentDashboardModel)
+	if got.mode != dashAgentsBrowse {
+		t.Fatalf("stop on a session row opened mode %v", got.mode)
+	}
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(agentDashboardModel)
+	if got.attachSession != "alpha" || got.attachPane.Index != -1 {
+		t.Fatalf("attach target = %s:%d, want alpha with no pane", got.attachSession, got.attachPane.Index)
 	}
 }
 
@@ -748,6 +798,11 @@ func TestOwnsWorkspace(t *testing.T) {
 			want:  false,
 		},
 		{
+			name:  "session row inside a worktree",
+			entry: agentEntry{isSession: true, worktreePath: "/tmp/wt", isWorktree: true},
+			want:  false,
+		},
+		{
 			name:  "managed run without a worktree",
 			entry: agentEntry{run: service.AgentRun{Managed: true}},
 			want:  false,
@@ -792,7 +847,7 @@ func TestDiscoverAgentsMarksWorktreeSessionAsOwningItsWorkspace(t *testing.T) {
 		t.Fatalf("discoverAgents: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.run.SessionName != sessionName {
+		if entry.isSession || entry.run.SessionName != sessionName {
 			continue
 		}
 		if !entry.ownsWorkspace() {
@@ -837,7 +892,7 @@ func TestCleanupAgentRemovesWorktreeSessionFromDisk(t *testing.T) {
 	}
 	var selected agentEntry
 	for _, entry := range entries {
-		if entry.run.SessionName == sessionName {
+		if !entry.isSession && entry.run.SessionName == sessionName {
 			selected = entry
 		}
 	}
@@ -885,7 +940,7 @@ func TestDiscoverAgentsKeepsPlainRepoSessionUnowned(t *testing.T) {
 		t.Fatalf("discoverAgents: %v", err)
 	}
 	for _, entry := range entries {
-		if entry.run.SessionName != sessionName {
+		if entry.isSession || entry.run.SessionName != sessionName {
 			continue
 		}
 		if entry.ownsWorkspace() {

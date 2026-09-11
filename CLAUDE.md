@@ -37,10 +37,10 @@ internal/pathutil/           Path expansion and directory helpers
 Use `.interface-design/system.md` as the source of truth for dashboard layout,
 tokens, hierarchy, reusable controls, and keyboard interaction patterns.
 
-The dashboard does not own a timer. It lists only agents: agent panes in any
-tmux session plus retained managed runs. Sessions without an agent stay out of
-the roster. It captures output once at startup and once per explicit
-refresh/action.
+The dashboard does not own a timer. It lists every tmux session with its agents
+nested beneath, plus retained managed runs under their closed session. Session
+rows are not registry runs. It captures output once at startup and once per
+explicit refresh/action.
 
 ## CLI surface
 
@@ -50,7 +50,7 @@ refresh/action.
 | `tsp project` | Create a project and tmux session. |
 | `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Open projects; list agents; spawn, delegate, attach, interrupt, clean, and refresh them. |
+| `tsp dash` | Open projects; jump to sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
 | `tsp rm` | Remove sessions with worktree awareness. |
 | `tsp cleanup` | Remove orphaned worktree-base entries. |
 | `tsp wtx-new` | Create manual worktree sessions. |
@@ -153,6 +153,8 @@ Do not start a local server; the project has no server runtime.
   only for managed runs. `agentEntry.isWorktree` comes from
   `DetectSessionGitInfoFull`; never infer a removable worktree from a pane cwd,
   or `x` would delete a plain checkout.
+- Session rows never own a workspace. `x` on a session row kills only the tmux
+  session; worktree removal stays on the agent row.
 - `tsp spawn` must not block on dependency install or setup. Dependency
   install and `spawn.default_setup` are chained ahead of the agent inside its
   own pane, so spawning returns once the worktree and session exist. A failing
