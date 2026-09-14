@@ -111,6 +111,8 @@ func (a agentEntry) status() string {
 		return "running"
 	case a.isSession && a.sessionExists:
 		return "idle"
+	case a.isSession:
+		return "closed"
 	case a.sessionExists:
 		return "exited"
 	default:
@@ -570,7 +572,9 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		m.collapseSelected()
 	case "enter":
-		if selected, ok := m.selected(); ok && selected.sessionExists {
+		if selected, ok := m.selected(); ok && !selected.sessionExists {
+			m.statusMessage = "Session is closed · expand it to inspect or clean retained agents"
+		} else if ok {
 			m.attachSession = selected.run.SessionName
 			m.attachPane = runPane(selected.run)
 			if selected.isSession || (selected.run.ParentRunID != "" && !selected.live) {
@@ -1493,10 +1497,18 @@ func (m agentDashboardModel) renderDetail(width, height int) string {
 	workspace := dashMetaStyle.Render("workspace ") + workspaceMode
 	controls := dashKeyStyle.Render("d") + " delegate   " + dashKeyStyle.Render("enter") + " attach   " +
 		dashKeyStyle.Render("s") + " stop   " + dashKeyStyle.Render("x") + " clean"
+	if !agent.sessionExists {
+		controls = dashKeyStyle.Render("x") + " clean retained agent"
+	}
 	if agent.isSession {
 		workspace = dashMetaStyle.Render("agents    ") + m.sessionSummary(agent.run.SessionName)
-		controls = dashKeyStyle.Render("enter") + " attach   " + dashKeyStyle.Render("h / l") + " fold   " +
-			dashKeyStyle.Render("x") + " remove session"
+		if agent.sessionExists {
+			controls = dashKeyStyle.Render("enter") + " attach   " + dashKeyStyle.Render("h / l") + " fold   " +
+				dashKeyStyle.Render("x") + " remove session"
+		} else {
+			controls = dashKeyStyle.Render("h / l") + " fold   " +
+				dashKeyStyle.Render("x") + " clean retained agents"
+		}
 	}
 	lines = append(lines,
 		workspace,

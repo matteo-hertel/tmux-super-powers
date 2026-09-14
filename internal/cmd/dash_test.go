@@ -454,7 +454,7 @@ func TestGroupBySessionNestsAgentsUnderTheirSession(t *testing.T) {
 	if !rows[0].live || rows[0].output != "alpha output" {
 		t.Fatalf("session row did not take its agent's state: %#v", rows[0])
 	}
-	if rows[3].status() != "missing" || rows[3].branch != "spawn/gone" {
+	if rows[3].status() != "closed" || rows[3].branch != "spawn/gone" {
 		t.Fatalf("row for a closed session = %#v", rows[3])
 	}
 }
@@ -515,6 +515,34 @@ func TestAgentDashboardSessionRowAttachesWithoutPaneAndCannotStop(t *testing.T) 
 	got = next.(agentDashboardModel)
 	if got.attachSession != "alpha" || got.attachPane.Index != -1 {
 		t.Fatalf("attach target = %s:%d, want alpha with no pane", got.attachSession, got.attachPane.Index)
+	}
+}
+
+func TestAgentDashboardClosedSessionDoesNotAdvertiseOrSilentlyIgnoreAttach(t *testing.T) {
+	model := newAgentDashboardModel([]agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "closed"}},
+		{run: service.AgentRun{ID: "retained", SessionName: "closed", Managed: true}},
+	}, &config.Config{}, nil, "/repo")
+	model.width = 100
+	model.height = 24
+
+	if view := model.renderDetail(60, 16); strings.Contains(view, "attach") || !strings.Contains(view, "CLOSED") {
+		t.Fatalf("closed session detail has misleading controls or state: %q", view)
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(agentDashboardModel)
+	if got.attachSession != "" {
+		t.Fatalf("closed session set attach target %q", got.attachSession)
+	}
+	if !strings.Contains(got.statusMessage, "Session is closed") {
+		t.Fatalf("closed session Enter message = %q", got.statusMessage)
+	}
+
+	model.expanded["closed"] = true
+	model.cursor = 1
+	if view := model.renderDetail(60, 16); strings.Contains(view, "attach") {
+		t.Fatalf("retained agent detail advertises attach after its session closed: %q", view)
 	}
 }
 
