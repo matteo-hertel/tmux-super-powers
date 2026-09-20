@@ -49,8 +49,10 @@ tsp dash
 ```
 
 The manager lists every tmux session collapsed, previewing its first pane.
-Press `l` on a session to see its agents and `h` to fold it again. Agents
-`tsp` spawned stay listed after they exit so you can clean their worktree.
+Press `l` on a session to see its agents and `h` to fold it again. Press `/` to
+filter the roster by session name, agent task, branch, or path; `Enter` keeps
+the query and `Esc` clears it. Agents `tsp` spawned stay listed after they exit
+so you can clean their worktree.
 It takes a snapshot only when it opens or when you press `r`; it does
 not poll pane output or CI. Delegation starts a new child pane in the selected
 session and retained workspace instead of injecting keystrokes into the old
@@ -72,6 +74,7 @@ never owns workspace deletion.
 | `r` | Refresh the agent and output snapshot |
 | `j` / `k` | Move through the roster |
 | `h` / `l` | Collapse or expand a session's agents |
+| `/` | Filter sessions by name, agent task, branch, or path |
 | `?` | Show help |
 
 Dashboard Open uses the directories configured for `tsp dir`. Dashboard New

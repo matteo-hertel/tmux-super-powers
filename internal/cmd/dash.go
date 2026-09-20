@@ -406,6 +406,8 @@ type agentDashboardModel struct {
 	modelInput          textinput.Model
 	baseInput           textinput.Model
 	directoryInput      textinput.Model
+	filterInput         textinput.Model
+	filterFocused       bool
 	focusedInput        int
 	managerAgent        string
 	spawnAgent          string
@@ -455,6 +457,11 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 	directoryInput.Placeholder = "Filter configured projects"
 	directoryInput.CharLimit = 500
 	directoryInput.Width = 72
+	filterInput := textinput.New()
+	filterInput.Placeholder = "Filter sessions"
+	filterInput.Prompt = "/ "
+	filterInput.CharLimit = 200
+	filterInput.Width = 72
 
 	managerAgent := config.AgentClaude
 	if cfg != nil && cfg.Manager.DefaultAgent != "" {
@@ -472,6 +479,7 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 		modelInput:     modelInput,
 		baseInput:      baseInput,
 		directoryInput: directoryInput,
+		filterInput:    filterInput,
 		managerAgent:   managerAgent,
 		expanded:       make(map[string]bool),
 	}
@@ -481,16 +489,89 @@ func (m agentDashboardModel) Init() tea.Cmd {
 	return nil
 }
 
+// entryMatchesFilter reports whether one roster entry matches the query. The
+// comparison is case-insensitive and matches any substring of the fields an
+// operator would recognise the row by. An empty query matches every entry.
+func entryMatchesFilter(entry agentEntry, query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return true
+	}
+	fields := []string{
+		entry.run.SessionName,
+		entry.run.Task,
+		entry.branch,
+		entry.run.Branch,
+		entry.run.CWD,
+		entry.workspacePath(),
+	}
+	if !entry.isSession {
+		fields = append(fields, entry.provider())
+	}
+	for _, field := range fields {
+		if field != "" && strings.Contains(strings.ToLower(field), query) {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionMatchesFilter keeps a session visible when it matches the query itself
+// or when any agent inside it does, so a search for a task still finds the
+// collapsed session holding it.
+func sessionMatchesFilter(session agentEntry, members []agentEntry, query string) bool {
+	if entryMatchesFilter(session, query) {
+		return true
+	}
+	for _, member := range members {
+		if entryMatchesFilter(member, query) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m agentDashboardModel) filterQuery() string {
+	return strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
+}
+
+// filterVisible reports whether the inline filter bar occupies a row. It stays
+// on screen while the input is focused and afterwards for as long as a query
+// narrows the roster.
+func (m agentDashboardModel) filterVisible() bool {
+	return m.filterFocused || m.filterQuery() != ""
+}
+
 func (m agentDashboardModel) rows() []agentEntry {
 	sessions := make(map[string]bool)
+	members := make(map[string][]agentEntry)
 	for _, entry := range m.agents {
 		if entry.isSession {
 			sessions[entry.run.SessionName] = true
+			continue
+		}
+		members[entry.run.SessionName] = append(members[entry.run.SessionName], entry)
+	}
+	query := m.filterQuery()
+	matched := make(map[string]bool, len(sessions))
+	for _, entry := range m.agents {
+		if entry.isSession {
+			matched[entry.run.SessionName] = sessionMatchesFilter(entry, members[entry.run.SessionName], query)
 		}
 	}
 	rows := make([]agentEntry, 0, len(m.agents))
 	for _, entry := range m.agents {
-		if entry.isSession || m.expanded[entry.run.SessionName] || !sessions[entry.run.SessionName] {
+		name := entry.run.SessionName
+		switch {
+		case entry.isSession:
+			if matched[name] {
+				rows = append(rows, entry)
+			}
+		case !sessions[name]:
+			if entryMatchesFilter(entry, query) {
+				rows = append(rows, entry)
+			}
+		case m.expanded[name] && matched[name]:
 			rows = append(rows, entry)
 		}
 	}
@@ -538,8 +619,10 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.agents = msg.agents
 		if msg.selectedID != "" {
 			m.restoreSelection(msg.selectedID)
-		} else if m.cursor >= len(m.rows()) && m.cursor > 0 {
-			m.cursor--
+		} else if rows := len(m.rows()); m.cursor >= rows {
+			// An action can remove several rows at once, and a filter can hide
+			// more of what is left, so step back to the last row rather than one.
+			m.cursor = max(0, rows-1)
 		}
 		m.statusMessage = msg.message
 		return m, nil
@@ -560,9 +643,21 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.filterFocused {
+		return m.updateFilter(msg)
+	}
 	switch msg.String() {
-	case "ctrl+c", "q", "esc":
+	case "ctrl+c", "q":
 		return m, tea.Quit
+	case "esc":
+		// An active filter is the nearest thing to back out of, so it takes
+		// priority over quitting the dashboard.
+		if m.filterQuery() == "" {
+			return m, tea.Quit
+		}
+		m.clearFilter()
+	case "/":
+		m.focusFilter()
 	case "up", "k":
 		m.moveCursor(-1)
 	case "down", "j":
@@ -615,6 +710,67 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = dashAgentsHelp
 	}
 	return m, nil
+}
+
+// updateFilter owns the keyboard while the inline filter bar is focused. The
+// roster keeps rendering behind it, so up and down still move the selection.
+func (m agentDashboardModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.clearFilter()
+		return m, nil
+	case "enter":
+		m.filterFocused = false
+		m.filterInput.Blur()
+		return m, nil
+	case "up":
+		m.moveCursor(-1)
+		return m, nil
+	case "down":
+		m.moveCursor(1)
+		return m, nil
+	}
+	selectedID := ""
+	if selected, ok := m.selected(); ok {
+		selectedID = selected.key()
+	}
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	m.keepFilteredSelection(selectedID)
+	return m, cmd
+}
+
+func (m *agentDashboardModel) focusFilter() {
+	m.filterFocused = true
+	m.filterInput.Focus()
+	m.filterInput.CursorEnd()
+}
+
+func (m *agentDashboardModel) clearFilter() {
+	selectedID := ""
+	if selected, ok := m.selected(); ok {
+		selectedID = selected.key()
+	}
+	m.filterInput.SetValue("")
+	m.filterInput.Blur()
+	m.filterFocused = false
+	m.keepFilteredSelection(selectedID)
+}
+
+// keepFilteredSelection follows the selected row to its new index after the
+// query changed, and falls back to the top when the filter removed it.
+func (m *agentDashboardModel) keepFilteredSelection(id string) {
+	if id != "" {
+		for index, row := range m.rows() {
+			if row.key() == id {
+				m.cursor = index
+				return
+			}
+		}
+	}
+	m.cursor = 0
 }
 
 func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1264,6 +1420,11 @@ func (m agentDashboardModel) renderDashboard() string {
 		Render(fmt.Sprintf("tsp / sessions   %d sessions · %d agents · %d running", sessions, agents, running))
 	project := dashMetaStyle.Render("spawn target  " + m.cwd)
 	bodyHeight := max(5, m.height-5)
+	sections := []string{header, project}
+	if m.filterVisible() {
+		sections = append(sections, m.renderFilterBar())
+		bodyHeight = max(5, m.height-6)
+	}
 
 	var body string
 	if len(m.agents) == 0 {
@@ -1286,17 +1447,34 @@ func (m agentDashboardModel) renderDashboard() string {
 		)
 	}
 
-	footerText := "o open   n new   d delegate   enter attach   h/l fold   s stop   x clean   r refresh   ? help   q quit"
+	footerText := "o open   n new   d delegate   enter attach   h/l fold   / filter   s stop   x clean   r refresh   ? help   q quit"
 	if m.width < 86 {
-		footerText = "o open  n new  d delegate  ↵ attach  h/l fold  s stop  x clean  r refresh  ? help  q quit"
+		footerText = "o open  n new  d delegate  ↵ attach  h/l fold  / filter  s stop  x clean  r refresh  ? help  q quit"
 	}
 	if m.busy {
 		footerText = "◌ " + m.statusMessage
+	} else if m.filterFocused {
+		footerText = dashKeyStyle.Render("enter") + dashMetaStyle.Render(" apply   ") +
+			dashKeyStyle.Render("esc") + dashMetaStyle.Render(" clear   ") +
+			dashKeyStyle.Render("↑ / ↓") + dashMetaStyle.Render(" choose")
 	} else if m.statusMessage != "" {
 		footerText = m.statusMessage
 	}
 	footer := lipgloss.NewStyle().Foreground(dashMuted).Padding(0, 1).Render(footerText)
-	return lipgloss.JoinVertical(lipgloss.Left, header, project, body, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, append(sections, body, footer)...)
+}
+
+// renderFilterBar draws the inline filter as one row between the spawn target
+// and the body. It is not a modal, so the roster stays readable behind it.
+func (m agentDashboardModel) renderFilterBar() string {
+	label := lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("FILTER")
+	input := m.filterInput
+	input.Width = max(12, m.width-lipgloss.Width(label)-4)
+	value := input.View()
+	if !m.filterFocused {
+		value = lipgloss.NewStyle().Foreground(dashInk).Render(input.Prompt + input.Value())
+	}
+	return ansi.Truncate(label+"  "+value, max(1, m.width), "")
 }
 
 func (m agentDashboardModel) rosterCounts() (sessions, agents, running int) {
@@ -1314,6 +1492,22 @@ func (m agentDashboardModel) rosterCounts() (sessions, agents, running int) {
 		}
 	}
 	return sessions, agents, running
+}
+
+// sessionRowCounts compares the session rows a filter left visible with every
+// session the snapshot knows about. Agent rows are not counted.
+func (m agentDashboardModel) sessionRowCounts(rows []agentEntry) (visible, total int) {
+	for _, row := range rows {
+		if row.isSession {
+			visible++
+		}
+	}
+	for _, entry := range m.agents {
+		if entry.isSession {
+			total++
+		}
+	}
+	return visible, total
 }
 
 func (m agentDashboardModel) sessionAgentCounts(name string) (agents, running int) {
@@ -1376,10 +1570,17 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 	}
 	end := min(len(rows), start+rowsVisible)
 	heading := "SESSIONS"
+	if query := m.filterQuery(); query != "" {
+		visible, total := m.sessionRowCounts(rows)
+		heading = fmt.Sprintf("SESSIONS  %d / %d", visible, total)
+	}
 	if len(rows) > rowsVisible {
 		heading = fmt.Sprintf("SESSIONS  %d–%d / %d", start+1, end, len(rows))
 	}
 	lines := []string{lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render(heading)}
+	if len(rows) == 0 && m.filterQuery() != "" {
+		lines = append(lines, dashMetaStyle.Render("No sessions match this filter."))
+	}
 	for index := start; index < end; index++ {
 		entry := rows[index]
 		indent := strings.Repeat("  ", min(m.agentDepth(entry), 3))
@@ -1719,6 +1920,7 @@ func (m agentDashboardModel) renderHelp() string {
 		"  " + dashKeyStyle.Render("d") + "          Delegate work or request a lifecycle action",
 		"  " + dashKeyStyle.Render("enter") + "      Attach to the session or agent pane",
 		"  " + dashKeyStyle.Render("h / l") + "      Collapse or expand a session's agents",
+		"  " + dashKeyStyle.Render("/") + "          Filter sessions by name, task, branch, or path",
 		"  " + dashKeyStyle.Render("s") + "          Interrupt the agent process",
 		"  " + dashKeyStyle.Render("x") + "          Remove the selected pane, session, or workspace",
 		"  " + dashKeyStyle.Render("r") + "          Refresh the agent/output snapshot",

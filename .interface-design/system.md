@@ -83,6 +83,14 @@ Color communicates state or focus. Do not add decorative hues.
   tmux session.
 - Delegated runs sit directly below their parent with two more columns of
   indentation.
+- `/` opens an inline filter bar between the spawn target and the body. It is
+  not a modal: header, roster, detail, and footer keep rendering and the body
+  loses one row. A session stays listed when the query matches its name,
+  branch, or path, or when any of its agents matches by task, provider, branch,
+  or path. Matching is case-insensitive substring. `Enter` keeps the query and
+  returns to the roster; `Esc` clears it and hides the bar. The roster heading
+  becomes `SESSIONS  <visible> / <total>`, and an empty result reads
+  `No sessions match this filter.`
 - The selected row uses `dashSelected`; unselected rows stay on the canvas.
 
 ### Open project picker
@@ -118,6 +126,8 @@ Color communicates state or focus. Do not add decorative hues.
 
 - `Tab` and `Shift+Tab` move between fields. Arrow keys act only on provider
   selectors. `Enter` submits. `Esc` cancels.
+- On the roster, `Esc` clears an active filter before it quits the dashboard.
+  With no filter it quits, and `q` and `Ctrl-C` always quit.
 - Footers list the available keys in interaction order.
 - Busy actions replace the dashboard footer with `◌` and a plain status line.
 - Empty, running, idle/exited, missing, error, confirmation, and success states
