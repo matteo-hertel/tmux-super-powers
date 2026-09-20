@@ -1425,23 +1425,30 @@ func (m agentDashboardModel) renderDashboard() string {
 		Padding(0, 1).
 		Render(fmt.Sprintf("tsp / sessions   %d sessions · %d agents · %d running", sessions, agents, running))
 	project := dashMetaStyle.Render("spawn target  " + m.cwd)
-	bodyHeight := max(5, m.height-5)
+	// The body gets exactly what the one-row header, spawn target, optional
+	// filter bar, and footer leave behind, so the footer survives every height.
+	chrome := 3
 	sections := []string{header, project}
 	if m.filterVisible() {
 		sections = append(sections, m.renderFilterBar())
-		bodyHeight = max(5, m.height-6)
+		chrome++
 	}
+	bodyHeight := max(1, m.height-chrome)
 
 	var body string
 	if len(m.agents) == 0 {
 		body = m.renderEmpty(bodyHeight)
 	} else if m.width < 86 {
-		listHeight := min(bodyHeight/2, max(5, len(m.rows())+1))
-		body = lipgloss.JoinVertical(
-			lipgloss.Left,
-			m.renderRoster(m.width, listHeight, true),
-			m.renderDetail(m.width, max(4, bodyHeight-listHeight)),
-		)
+		listHeight := max(1, min(bodyHeight/2, max(5, len(m.rows())+1)))
+		if detailHeight := bodyHeight - listHeight; detailHeight > 0 {
+			body = lipgloss.JoinVertical(
+				lipgloss.Left,
+				m.renderRoster(m.width, listHeight, true),
+				m.renderDetail(m.width, detailHeight),
+			)
+		} else {
+			body = m.renderRoster(m.width, bodyHeight, true)
+		}
 	} else {
 		rosterWidth := max(30, m.width*36/100)
 		detailWidth := max(40, m.width-rosterWidth-1)
@@ -1584,6 +1591,7 @@ func (m agentDashboardModel) renderEmpty(height int) string {
 		dashKeyStyle.Render("o") + dashMetaStyle.Render("  open project"),
 		dashKeyStyle.Render("n") + dashMetaStyle.Render("  new agent"),
 	}
+	lines = clampRenderedLines(lines, height)
 	return lipgloss.NewStyle().Width(max(1, m.width-2)).Height(height).PaddingLeft(2).Render(strings.Join(lines, "\n"))
 }
 
@@ -1665,6 +1673,7 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 		}
 		lines = append(lines, style.Render(row))
 	}
+	lines = clampRenderedLines(lines, height)
 	return lipgloss.NewStyle().Width(width).Height(height).PaddingLeft(1).Render(strings.Join(lines, "\n"))
 }
 
@@ -1749,18 +1758,44 @@ func (m agentDashboardModel) renderDetail(width, height int) string {
 		"",
 		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("CONTROLS"),
 		controls,
-		"",
-		lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("OUTPUT SNAPSHOT")+
-			dashMetaStyle.Render("  press r to refresh"),
 	)
-	outputLines := nonEmptyTail(agent.output, max(1, height-len(lines)-2))
-	if len(outputLines) == 0 {
-		outputLines = []string{"No output captured."}
+	// The snapshot spends only the rows the identity and controls left over,
+	// and its heading goes with it when there is no room for a line under it.
+	if remaining := height - len(lines); remaining >= 3 {
+		lines = append(lines,
+			"",
+			lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("OUTPUT SNAPSHOT")+
+				dashMetaStyle.Render("  press r to refresh"),
+		)
+		outputLines := nonEmptyTail(agent.output, remaining-2)
+		if len(outputLines) == 0 {
+			outputLines = []string{"No output captured."}
+		}
+		for _, line := range outputLines {
+			lines = append(lines, lipgloss.NewStyle().Foreground(dashMuted).Render(ansi.Truncate(line, contentWidth, "…")))
+		}
 	}
-	for _, line := range outputLines {
-		lines = append(lines, lipgloss.NewStyle().Foreground(dashMuted).Render(ansi.Truncate(line, contentWidth, "…")))
-	}
+	lines = clampRenderedLines(lines, height)
 	return lipgloss.NewStyle().Width(width).Height(height).Padding(0, 1).Render(strings.Join(lines, "\n"))
+}
+
+// clampRenderedLines keeps a pane inside the height it was given. A lipgloss
+// Height() pads a short block but never trims a tall one, so every pane trims
+// itself here instead of pushing the footer off the terminal. Entries may span
+// several rows, such as a wide roster row, and are dropped whole.
+func clampRenderedLines(lines []string, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	used := 0
+	for index, line := range lines {
+		rows := strings.Count(line, "\n") + 1
+		if used+rows > height {
+			return lines[:index]
+		}
+		used += rows
+	}
+	return lines
 }
 
 func nonEmptyTail(text string, limit int) []string {

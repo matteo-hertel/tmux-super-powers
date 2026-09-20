@@ -882,14 +882,13 @@ func TestAgentDashboardFilterHeadingCombinesScrollRangeAndTotal(t *testing.T) {
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	model = resizeDashboard(t, model, 120, 24)
 
-	// Without the filter bar the roster keeps one more row.
 	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 30") {
 		t.Fatalf("unfiltered scrolling heading changed: %q", view)
 	}
 
 	model, _ = pressKey(t, model, "/")
 	model, _ = pressKey(t, model, "keep")
-	if view := model.View(); !strings.Contains(view, "SESSIONS  1–5 / 12 of 30") {
+	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 12 of 30") {
 		t.Fatalf("scrolling filtered heading lost the session total: %q", view)
 	}
 
@@ -921,6 +920,92 @@ func TestAgentDashboardHeadingAndHeaderShareSessionDenominator(t *testing.T) {
 	}
 	if !strings.Contains(view, "SESSIONS  1 / 2") {
 		t.Fatalf("roster heading counts a closed session the header ignores: %q", view)
+	}
+}
+
+func TestAgentDashboardKeepsFooterVisibleAtShortHeights(t *testing.T) {
+	entries := []agentEntry{
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "alpha", CWD: "/work/alpha"},
+			branch:        "main",
+			live:          true,
+			sessionExists: true,
+			output:        strings.Repeat("alpha pane output\n", 60),
+		},
+		{
+			run: service.AgentRun{
+				ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderClaude,
+				Task: "rewrite the parser", CWD: "/work/alpha", ParentRunID: "",
+			},
+			branch: "main", live: true, sessionExists: true,
+			output: strings.Repeat("agent output line\n", 60),
+		},
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "beta", CWD: "/work/beta"},
+			branch:        "spawn/beta",
+			sessionExists: true,
+		},
+	}
+
+	bounded := func(t *testing.T, model agentDashboardModel, width, height int, footer string) {
+		t.Helper()
+		lines := strings.Split(model.View(), "\n")
+		if len(lines) > height {
+			t.Fatalf("view rendered %d lines for height %d", len(lines), height)
+		}
+		for index, line := range lines {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("line %d width = %d, want <= %d", index, got, width)
+			}
+		}
+		if last := lines[len(lines)-1]; !strings.Contains(last, footer) {
+			t.Fatalf("footer %q was pushed off a %dx%d terminal, last line = %q", footer, width, height, last)
+		}
+	}
+
+	for _, width := range []int{120, 72} {
+		for _, height := range []int{14, 12, 10} {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+				model = resizeDashboard(t, model, width, height)
+				model, _ = pressKey(t, model, "/")
+				model, _ = pressKey(t, model, "parser")
+				bounded(t, model, width, height, "apply")
+
+				applied, _ := pressKey(t, model, "enter")
+				applied, _ = pressKey(t, applied, "l")
+				applied, _ = pressKey(t, applied, "j")
+				if selected, ok := applied.selected(); !ok || selected.key() != "run-alpha" {
+					t.Fatalf("expected the agent row selected, got %q (ok=%t)", selected.key(), ok)
+				}
+				bounded(t, applied, width, height, "o open")
+			})
+		}
+	}
+}
+
+func TestClampRenderedLines(t *testing.T) {
+	tests := []struct {
+		name   string
+		lines  []string
+		height int
+		want   []string
+	}{
+		{name: "fits", lines: []string{"a", "b"}, height: 3, want: []string{"a", "b"}},
+		{name: "trims the overflow", lines: []string{"a", "b", "c"}, height: 2, want: []string{"a", "b"}},
+		{name: "drops a tall entry whole", lines: []string{"a", "b\nc\nd"}, height: 3, want: []string{"a"}},
+		{name: "keeps a tall entry that fits", lines: []string{"a\nb", "c"}, height: 3, want: []string{"a\nb", "c"}},
+		{name: "no room at all", lines: []string{"a"}, height: 0, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clampRenderedLines(tt.lines, tt.height)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Fatalf("clampRenderedLines(%q, %d) = %q, want %q", tt.lines, tt.height, got, tt.want)
+			}
+		})
 	}
 }
 

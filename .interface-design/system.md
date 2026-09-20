@@ -59,7 +59,12 @@ Color communicates state or focus. Do not add decorative hues.
 - Wide dashboard breakpoint: 86 columns. Above it, roster and detail sit side
   by side with the roster at 36% width. Below it, use a compact one-line roster
   above the detail pane.
-- Every view must be clipped to the current terminal width and height.
+- Every view must be clipped to the current terminal width and height. Each
+  pane also trims itself to the height it was given, and the body takes only
+  what the header, spawn target, filter bar, and footer leave behind, so a tall
+  roster or detail can never push the footer off the terminal. The detail pane
+  spends its rows on identity first and drops the output snapshot, heading
+  included, when nothing is left for it.
 
 ## Component patterns
 
