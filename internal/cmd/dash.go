@@ -568,6 +568,9 @@ func (m agentDashboardModel) rows() []agentEntry {
 				rows = append(rows, entry)
 			}
 		case !sessions[name]:
+			// An agent without a session row is the only member of its own
+			// virtual session, so the session rule above reduces to matching
+			// this entry alone.
 			if entryMatchesFilter(entry, query) {
 				rows = append(rows, entry)
 			}
@@ -591,6 +594,9 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// The input scrolls against its own width while it is being typed into,
+		// so it has to learn the terminal size here rather than at render time.
+		m.filterInput.Width = filterInputWidth(msg.Width)
 		return m, nil
 
 	case agentsRefreshedMsg:
@@ -1447,16 +1453,24 @@ func (m agentDashboardModel) renderDashboard() string {
 		)
 	}
 
-	footerText := "o open   n new   d delegate   enter attach   h/l fold   / filter   s stop   x clean   r refresh   ? help   q quit"
-	if m.width < 86 {
-		footerText = "o open  n new  d delegate  ↵ attach  h/l fold  / filter  s stop  x clean  r refresh  ? help  q quit"
-	}
+	// The footer picks its variant by measurement, not by the layout
+	// breakpoint, because the key list is longer than the 86-column wide
+	// layout it sits under.
+	footerText := m.fitFooter(
+		"o open   n new   d delegate   enter attach   h/l fold   / filter   s stop   x clean   r refresh   ? help   q quit",
+		"o open  n new  d delegate  ↵ attach  h/l fold  / filter  s stop  x clean  r refresh  ? help  q quit",
+	)
 	if m.busy {
 		footerText = "◌ " + m.statusMessage
 	} else if m.filterFocused {
-		footerText = dashKeyStyle.Render("enter") + dashMetaStyle.Render(" apply   ") +
-			dashKeyStyle.Render("esc") + dashMetaStyle.Render(" clear   ") +
-			dashKeyStyle.Render("↑ / ↓") + dashMetaStyle.Render(" choose")
+		footerText = m.fitFooter(
+			dashKeyStyle.Render("enter")+dashMetaStyle.Render(" apply   ")+
+				dashKeyStyle.Render("esc")+dashMetaStyle.Render(" clear   ")+
+				dashKeyStyle.Render("↑ / ↓")+dashMetaStyle.Render(" choose"),
+			dashKeyStyle.Render("↵")+dashMetaStyle.Render(" apply  ")+
+				dashKeyStyle.Render("esc")+dashMetaStyle.Render(" clear  ")+
+				dashKeyStyle.Render("↑↓")+dashMetaStyle.Render(" choose"),
+		)
 	} else if m.statusMessage != "" {
 		footerText = m.statusMessage
 	}
@@ -1464,15 +1478,30 @@ func (m agentDashboardModel) renderDashboard() string {
 	return lipgloss.JoinVertical(lipgloss.Left, append(sections, body, footer)...)
 }
 
+// fitFooter keeps the spelled-out footer while it fits inside the terminal,
+// including the row's one column of padding on each side, and falls back to the
+// abbreviated one rather than letting the last keys be chopped off.
+func (m agentDashboardModel) fitFooter(wide, narrow string) string {
+	if lipgloss.Width(wide)+2 <= m.width {
+		return wide
+	}
+	return narrow
+}
+
+// filterInputWidth reserves the columns the bar spends on the FILTER label, its
+// two-column gap, and the "/ " prompt, so a query longer than the terminal
+// scrolls inside the input instead of running off the right edge.
+func filterInputWidth(width int) int {
+	return max(12, width-10)
+}
+
 // renderFilterBar draws the inline filter as one row between the spawn target
 // and the body. It is not a modal, so the roster stays readable behind it.
 func (m agentDashboardModel) renderFilterBar() string {
 	label := lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render("FILTER")
-	input := m.filterInput
-	input.Width = max(12, m.width-lipgloss.Width(label)-4)
-	value := input.View()
+	value := m.filterInput.View()
 	if !m.filterFocused {
-		value = lipgloss.NewStyle().Foreground(dashInk).Render(input.Prompt + input.Value())
+		value = lipgloss.NewStyle().Foreground(dashInk).Render(m.filterInput.Prompt + m.filterInput.Value())
 	}
 	return ansi.Truncate(label+"  "+value, max(1, m.width), "")
 }
@@ -1495,15 +1524,16 @@ func (m agentDashboardModel) rosterCounts() (sessions, agents, running int) {
 }
 
 // sessionRowCounts compares the session rows a filter left visible with every
-// session the snapshot knows about. Agent rows are not counted.
+// session the snapshot knows about. Agent rows are not counted, and closed
+// sessions are excluded on both sides so this shares the header's denominator.
 func (m agentDashboardModel) sessionRowCounts(rows []agentEntry) (visible, total int) {
 	for _, row := range rows {
-		if row.isSession {
+		if row.isSession && row.sessionExists {
 			visible++
 		}
 	}
 	for _, entry := range m.agents {
-		if entry.isSession {
+		if entry.isSession && entry.sessionExists {
 			total++
 		}
 	}
@@ -1570,11 +1600,14 @@ func (m agentDashboardModel) renderRoster(width, height int, compact bool) strin
 	}
 	end := min(len(rows), start+rowsVisible)
 	heading := "SESSIONS"
-	if query := m.filterQuery(); query != "" {
-		visible, total := m.sessionRowCounts(rows)
+	visible, total := m.sessionRowCounts(rows)
+	scrolling := len(rows) > rowsVisible
+	switch {
+	case m.filterQuery() != "" && scrolling:
+		heading = fmt.Sprintf("SESSIONS  %d–%d / %d of %d", start+1, end, len(rows), total)
+	case m.filterQuery() != "":
 		heading = fmt.Sprintf("SESSIONS  %d / %d", visible, total)
-	}
-	if len(rows) > rowsVisible {
+	case scrolling:
 		heading = fmt.Sprintf("SESSIONS  %d–%d / %d", start+1, end, len(rows))
 	}
 	lines := []string{lipgloss.NewStyle().Foreground(dashFaint).Bold(true).Render(heading)}

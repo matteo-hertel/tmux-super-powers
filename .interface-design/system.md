@@ -89,8 +89,12 @@ Color communicates state or focus. Do not add decorative hues.
   branch, or path, or when any of its agents matches by task, provider, branch,
   or path. Matching is case-insensitive substring. `Enter` keeps the query and
   returns to the roster; `Esc` clears it and hides the bar. The roster heading
-  becomes `SESSIONS  <visible> / <total>`, and an empty result reads
-  `No sessions match this filter.`
+  becomes `SESSIONS  <visible> / <total>`, or
+  `SESSIONS  <start>–<end> / <rows> of <total>` when the filtered roster also
+  scrolls; both counts ignore closed sessions so they match the header. An
+  empty result reads `No sessions match this filter.`
+- The filter input owns its own width so a query longer than the terminal
+  scrolls inside the bar instead of running past the right edge.
 - The selected row uses `dashSelected`; unselected rows stay on the canvas.
 
 ### Open project picker
@@ -128,7 +132,9 @@ Color communicates state or focus. Do not add decorative hues.
   selectors. `Enter` submits. `Esc` cancels.
 - On the roster, `Esc` clears an active filter before it quits the dashboard.
   With no filter it quits, and `q` and `Ctrl-C` always quit.
-- Footers list the available keys in interaction order.
+- Footers list the available keys in interaction order. A footer picks its
+  spelled-out or abbreviated form by measuring against the terminal width, not
+  from the 86-column layout breakpoint, so the last keys are never chopped off.
 - Busy actions replace the dashboard footer with `◌` and a plain status line.
 - Empty, running, idle/exited, missing, error, confirmation, and success states
   must remain visible and bounded at narrow terminal sizes.
