@@ -501,6 +501,563 @@ func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
 	}
 }
 
+func filterRosterEntries() []agentEntry {
+	return []agentEntry{
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "alpha", CWD: "/work/alpha"},
+			branch:        "main",
+			live:          true,
+			sessionExists: true,
+		},
+		{
+			run: service.AgentRun{
+				ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderClaude,
+				Task: "rewrite the parser", CWD: "/work/alpha",
+			},
+			branch: "main", live: true, sessionExists: true,
+		},
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "beta", CWD: "/work/beta"},
+			branch:        "spawn/beta",
+			sessionExists: true,
+		},
+		{
+			run: service.AgentRun{
+				ID: "run-beta", SessionName: "beta", Provider: service.AgentProviderCodex,
+				Task: "update the docs", CWD: "/work/beta",
+			},
+			branch: "spawn/beta", sessionExists: true,
+		},
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "gamma", CWD: "/work/gamma"},
+			branch:        "release",
+			sessionExists: true,
+		},
+	}
+}
+
+func pressKey(t *testing.T, model agentDashboardModel, key string) (agentDashboardModel, tea.Cmd) {
+	t.Helper()
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+	switch key {
+	case "enter":
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "ctrl+c":
+		msg = tea.KeyMsg{Type: tea.KeyCtrlC}
+	case " ":
+		// A real space arrives as KeySpace carrying its rune.
+		msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+	}
+	next, cmd := model.Update(msg)
+	return next.(agentDashboardModel), cmd
+}
+
+func resizeDashboard(t *testing.T, model agentDashboardModel, width, height int) agentDashboardModel {
+	t.Helper()
+	next, _ := model.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	return next.(agentDashboardModel)
+}
+
+// isQuitCmd reports whether a command asks Bubble Tea to quit without blocking
+// on commands that wait, such as the text input's cursor blink.
+func isQuitCmd(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	result := make(chan tea.Msg, 1)
+	go func() { result <- cmd() }()
+	select {
+	case msg := <-result:
+		_, quit := msg.(tea.QuitMsg)
+		return quit
+	case <-time.After(50 * time.Millisecond):
+		// tea.Quit returns immediately; anything still waiting is not a quit.
+		return false
+	}
+}
+
+func visibleRowKeys(model agentDashboardModel) string {
+	var keys []string
+	for _, row := range model.rows() {
+		keys = append(keys, row.key())
+	}
+	return strings.Join(keys, ",")
+}
+
+func TestAgentDashboardFilterNarrowsRosterToMatchingSessions(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+
+	model, cmd := pressKey(t, model, "/")
+	if cmd != nil {
+		t.Fatal("opening the filter returned an unexpected command")
+	}
+	if !model.filterFocused || !model.filterInput.Focused() {
+		t.Fatal("pressing / did not focus the filter input")
+	}
+	if got := visibleRowKeys(model); got != "session:alpha,session:beta,session:gamma" {
+		t.Fatalf("rows before typing = %s", got)
+	}
+
+	model, _ = pressKey(t, model, "parser")
+	if got := visibleRowKeys(model); got != "session:alpha" {
+		t.Fatalf("rows matching an agent task = %s, want session:alpha only", got)
+	}
+	if model.filterInput.Value() != "parser" {
+		t.Fatalf("filter value = %q", model.filterInput.Value())
+	}
+}
+
+func TestAgentDashboardFilterEnterAppliesAndEscClearsWithoutQuitting(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model.expanded["alpha"] = true
+
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+	model, cmd := pressKey(t, model, "enter")
+	if cmd != nil {
+		t.Fatal("applying the filter returned an unexpected command")
+	}
+	if model.filterFocused || model.filterInput.Focused() {
+		t.Fatal("enter should unfocus the filter input")
+	}
+	if model.filterQuery() != "parser" || !model.filterVisible() {
+		t.Fatalf("enter dropped the query: %q visible=%t", model.filterQuery(), model.filterVisible())
+	}
+	if got := visibleRowKeys(model); got != "session:alpha,run-alpha" {
+		t.Fatalf("filtered rows after enter = %s", got)
+	}
+
+	model, _ = pressKey(t, model, "j")
+	if selected, _ := model.selected(); selected.key() != "run-alpha" {
+		t.Fatalf("j inside the filtered roster selected %q", selected.key())
+	}
+	model, _ = pressKey(t, model, "k")
+	if selected, _ := model.selected(); selected.key() != "session:alpha" {
+		t.Fatalf("k inside the filtered roster selected %q", selected.key())
+	}
+
+	model, cmd = pressKey(t, model, "esc")
+	if cmd != nil {
+		t.Fatal("esc with an active filter quit the dashboard")
+	}
+	if model.filterVisible() || model.filterQuery() != "" {
+		t.Fatal("esc did not clear the active filter")
+	}
+	if got := visibleRowKeys(model); got != "session:alpha,run-alpha,session:beta,session:gamma" {
+		t.Fatalf("rows after clearing the filter = %s", got)
+	}
+
+	model, cmd = pressKey(t, model, "esc")
+	if cmd == nil {
+		t.Fatal("esc without a filter did not quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("esc without a filter returned %T, want tea.QuitMsg", cmd())
+	}
+}
+
+func TestAgentDashboardFilterEscWhileFocusedHidesBar(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+
+	model, cmd := pressKey(t, model, "esc")
+	if cmd != nil {
+		t.Fatal("esc while the filter is focused quit the dashboard")
+	}
+	if model.filterFocused || model.filterInput.Value() != "" || model.filterVisible() {
+		t.Fatalf("esc left the filter bar up: focused=%t value=%q", model.filterFocused, model.filterInput.Value())
+	}
+	if got := visibleRowKeys(model); got != "session:alpha,session:beta,session:gamma" {
+		t.Fatalf("rows after esc = %s", got)
+	}
+}
+
+func TestAgentDashboardFilterKeepsCursorInsideFilteredRows(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model.cursor = len(model.rows()) - 1
+	if selected, _ := model.selected(); selected.key() != "session:gamma" {
+		t.Fatalf("cursor did not start on the last row: %q", selected.key())
+	}
+
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+	selected, ok := model.selected()
+	if !ok {
+		t.Fatalf("cursor %d is out of bounds for %d filtered rows", model.cursor, len(model.rows()))
+	}
+	if model.cursor != 0 || selected.key() != "session:alpha" {
+		t.Fatalf("cursor = %d selecting %q, want 0 selecting session:alpha", model.cursor, selected.key())
+	}
+}
+
+func TestAgentDashboardFilterRefocusesAndReportsSessionCounts(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+	model, _ = pressKey(t, model, "enter")
+
+	for _, size := range []struct{ width, height int }{{120, 42}, {72, 24}} {
+		model.width = size.width
+		model.height = size.height
+		view := model.View()
+		if !strings.Contains(view, "FILTER") {
+			t.Fatalf("filter bar missing at %dx%d: %q", size.width, size.height, view)
+		}
+		if !strings.Contains(view, "SESSIONS  1 / 3") {
+			t.Fatalf("roster heading counted filtered-out sessions at %dx%d: %q", size.width, size.height, view)
+		}
+		if !strings.Contains(view, "/ filter") {
+			t.Fatalf("footer is missing the filter shortcut at %dx%d: %q", size.width, size.height, view)
+		}
+		lines := strings.Split(view, "\n")
+		if len(lines) > size.height {
+			t.Fatalf("view rendered %d lines for height %d", len(lines), size.height)
+		}
+		for index, line := range lines {
+			if width := lipgloss.Width(line); width > size.width {
+				t.Fatalf("line %d width = %d, want <= %d", index, width, size.width)
+			}
+		}
+	}
+
+	refocused, _ := pressKey(t, model, "/")
+	if !refocused.filterFocused || refocused.filterQuery() != "parser" {
+		t.Fatalf("/ did not refocus the existing query: focused=%t query=%q", refocused.filterFocused, refocused.filterQuery())
+	}
+	if view := refocused.View(); !strings.Contains(view, "enter apply") || !strings.Contains(view, "esc clear") {
+		t.Fatalf("focused filter footer = %q", view)
+	}
+}
+
+func TestAgentDashboardFilterWithoutMatchesEmptiesRosterAndDetail(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model.width = 100
+	model.height = 24
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "nothing-matches-this")
+
+	if len(model.rows()) != 0 {
+		t.Fatalf("rows = %s, want none", visibleRowKeys(model))
+	}
+	if detail := model.renderDetail(60, 16); detail != "" {
+		t.Fatalf("detail pane rendered for an empty roster: %q", detail)
+	}
+	if view := model.View(); !strings.Contains(view, "No sessions match this filter.") {
+		t.Fatalf("empty filter result is not explained: %q", view)
+	}
+}
+
+func TestAgentDashboardFocusedFilterSwallowsBrowseShortcuts(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+
+	typed := ""
+	for _, key := range []string{"q", "n", "x", "s", "r", "?", "o", "d", "j", "k", "h", "l", "/", " "} {
+		var cmd tea.Cmd
+		model, cmd = pressKey(t, model, key)
+		typed += key
+		if isQuitCmd(cmd) {
+			t.Fatalf("%q quit the dashboard while the filter was focused", key)
+		}
+		if model.mode != dashAgentsBrowse {
+			t.Fatalf("%q opened mode %v while the filter was focused", key, model.mode)
+		}
+		if !model.filterFocused {
+			t.Fatalf("%q unfocused the filter", key)
+		}
+		if model.filterInput.Value() != typed {
+			t.Fatalf("after %q the filter holds %q, want %q", key, model.filterInput.Value(), typed)
+		}
+	}
+	if model.busy || model.attachSession != "" || model.openDirectory != "" {
+		t.Fatalf("typing into the filter triggered a roster action: %#v", model.statusMessage)
+	}
+}
+
+func TestAgentDashboardFocusedFilterStillQuitsOnCtrlC(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+
+	_, cmd := pressKey(t, model, "ctrl+c")
+	if !isQuitCmd(cmd) {
+		t.Fatal("ctrl+c while the filter was focused did not quit")
+	}
+}
+
+func TestAgentDashboardFilteredRosterFoldsWithoutLosingSelection(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+	model, _ = pressKey(t, model, "enter")
+
+	model, _ = pressKey(t, model, "l")
+	selected, ok := model.selected()
+	if !ok || selected.key() != "session:alpha" {
+		t.Fatalf("expanding a filtered session selected %q (ok=%t)", selected.key(), ok)
+	}
+	if got := visibleRowKeys(model); got != "session:alpha,run-alpha" {
+		t.Fatalf("expanded filtered rows = %s", got)
+	}
+
+	model, _ = pressKey(t, model, "h")
+	selected, ok = model.selected()
+	if !ok || selected.key() != "session:alpha" {
+		t.Fatalf("folding a filtered session selected %q (ok=%t)", selected.key(), ok)
+	}
+	if got := visibleRowKeys(model); got != "session:alpha" {
+		t.Fatalf("folded filtered rows = %s", got)
+	}
+}
+
+func TestAgentDashboardRefreshKeepsActiveFilter(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "parser")
+	model, _ = pressKey(t, model, "enter")
+
+	model, cmd := pressKey(t, model, "r")
+	if cmd == nil || !model.busy {
+		t.Fatal("r did not start a refresh")
+	}
+	next, _ := model.Update(agentsRefreshedMsg{agents: filterRosterEntries()})
+	model = next.(agentDashboardModel)
+
+	if model.busy {
+		t.Fatal("refresh left the dashboard busy")
+	}
+	if model.filterQuery() != "parser" || !model.filterVisible() {
+		t.Fatalf("refresh dropped the filter: query=%q visible=%t", model.filterQuery(), model.filterVisible())
+	}
+	if got := visibleRowKeys(model); got != "session:alpha" {
+		t.Fatalf("rows after refresh = %s, want the filtered roster", got)
+	}
+	if selected, ok := model.selected(); !ok || selected.key() != "session:alpha" {
+		t.Fatalf("refresh left the cursor on %q (ok=%t)", selected.key(), ok)
+	}
+}
+
+func TestAgentDashboardFilterScrollsLongQueryIntoView(t *testing.T) {
+	model := newAgentDashboardModel(filterRosterEntries(), &config.Config{}, nil, "/repo")
+	model = resizeDashboard(t, model, 60, 24)
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, strings.Repeat("alpha-", 10)+"TAIL")
+
+	bar := model.renderFilterBar()
+	if !strings.Contains(bar, "TAIL") {
+		t.Fatalf("the end of a long query is off-screen at 60 columns: %q", bar)
+	}
+	if width := lipgloss.Width(bar); width > 60 {
+		t.Fatalf("filter bar width = %d, want <= 60", width)
+	}
+	for index, line := range strings.Split(model.View(), "\n") {
+		if width := lipgloss.Width(line); width > 60 {
+			t.Fatalf("line %d width = %d, want <= 60", index, width)
+		}
+	}
+}
+
+func TestAgentDashboardFilterHeadingCombinesScrollRangeAndTotal(t *testing.T) {
+	var entries []agentEntry
+	for index := 0; index < 12; index++ {
+		entries = append(entries, agentEntry{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: fmt.Sprintf("keep-%02d", index)},
+			sessionExists: true,
+		})
+	}
+	for index := 0; index < 18; index++ {
+		entries = append(entries, agentEntry{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: fmt.Sprintf("other-%02d", index)},
+			sessionExists: true,
+		})
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	model = resizeDashboard(t, model, 120, 24)
+
+	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 30") {
+		t.Fatalf("unfiltered scrolling heading changed: %q", view)
+	}
+
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "keep")
+	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 12 of 30") {
+		t.Fatalf("scrolling filtered heading lost the session total: %q", view)
+	}
+
+	model, _ = pressKey(t, model, "-1")
+	if view := model.View(); !strings.Contains(view, "SESSIONS  2 / 30") {
+		t.Fatalf("non-scrolling filtered heading = %q", view)
+	}
+}
+
+func TestAgentDashboardHeadingAndHeaderShareSessionDenominator(t *testing.T) {
+	entries := []agentEntry{
+		{isSession: true, run: service.AgentRun{SessionName: "alpha-live"}, live: true, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "beta-live"}, sessionExists: true},
+		{isSession: true, run: service.AgentRun{SessionName: "gamma-closed"}},
+		{
+			run: service.AgentRun{
+				ID: "retained", SessionName: "gamma-closed", Task: "leftover work", Managed: true,
+			},
+		},
+	}
+	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+	model = resizeDashboard(t, model, 110, 24)
+	model, _ = pressKey(t, model, "/")
+	model, _ = pressKey(t, model, "alpha-live")
+
+	view := model.View()
+	if !strings.Contains(view, "2 sessions · 1 agents · 0 running") {
+		t.Fatalf("header stopped counting only open sessions: %q", view)
+	}
+	if !strings.Contains(view, "SESSIONS  1 / 2") {
+		t.Fatalf("roster heading counts a closed session the header ignores: %q", view)
+	}
+}
+
+func TestAgentDashboardKeepsFooterVisibleAtShortHeights(t *testing.T) {
+	entries := []agentEntry{
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "alpha", CWD: "/work/alpha"},
+			branch:        "main",
+			live:          true,
+			sessionExists: true,
+			output:        strings.Repeat("alpha pane output\n", 60),
+		},
+		{
+			run: service.AgentRun{
+				ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderClaude,
+				Task: "rewrite the parser", CWD: "/work/alpha", ParentRunID: "",
+			},
+			branch: "main", live: true, sessionExists: true,
+			output: strings.Repeat("agent output line\n", 60),
+		},
+		{
+			isSession:     true,
+			run:           service.AgentRun{SessionName: "beta", CWD: "/work/beta"},
+			branch:        "spawn/beta",
+			sessionExists: true,
+		},
+	}
+
+	bounded := func(t *testing.T, model agentDashboardModel, width, height int, footer string) {
+		t.Helper()
+		lines := strings.Split(model.View(), "\n")
+		if len(lines) > height {
+			t.Fatalf("view rendered %d lines for height %d", len(lines), height)
+		}
+		for index, line := range lines {
+			if got := lipgloss.Width(line); got > width {
+				t.Fatalf("line %d width = %d, want <= %d", index, got, width)
+			}
+		}
+		if last := lines[len(lines)-1]; !strings.Contains(last, footer) {
+			t.Fatalf("footer %q was pushed off a %dx%d terminal, last line = %q", footer, width, height, last)
+		}
+	}
+
+	for _, width := range []int{120, 72} {
+		for _, height := range []int{14, 12, 10} {
+			t.Run(fmt.Sprintf("%dx%d", width, height), func(t *testing.T) {
+				model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
+				model = resizeDashboard(t, model, width, height)
+				model, _ = pressKey(t, model, "/")
+				model, _ = pressKey(t, model, "parser")
+				bounded(t, model, width, height, "apply")
+
+				applied, _ := pressKey(t, model, "enter")
+				applied, _ = pressKey(t, applied, "l")
+				applied, _ = pressKey(t, applied, "j")
+				if selected, ok := applied.selected(); !ok || selected.key() != "run-alpha" {
+					t.Fatalf("expected the agent row selected, got %q (ok=%t)", selected.key(), ok)
+				}
+				bounded(t, applied, width, height, "o open")
+			})
+		}
+	}
+}
+
+func TestClampRenderedLines(t *testing.T) {
+	tests := []struct {
+		name   string
+		lines  []string
+		height int
+		want   []string
+	}{
+		{name: "fits", lines: []string{"a", "b"}, height: 3, want: []string{"a", "b"}},
+		{name: "trims the overflow", lines: []string{"a", "b", "c"}, height: 2, want: []string{"a", "b"}},
+		{name: "drops a tall entry whole", lines: []string{"a", "b\nc\nd"}, height: 3, want: []string{"a"}},
+		{name: "keeps a tall entry that fits", lines: []string{"a\nb", "c"}, height: 3, want: []string{"a\nb", "c"}},
+		{name: "no room at all", lines: []string{"a"}, height: 0, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clampRenderedLines(tt.lines, tt.height)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Fatalf("clampRenderedLines(%q, %d) = %q, want %q", tt.lines, tt.height, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEntryMatchesFilter(t *testing.T) {
+	session := agentEntry{
+		isSession:     true,
+		run:           service.AgentRun{SessionName: "alpha", CWD: "/work/alpha"},
+		branch:        "spawn/parser",
+		sessionExists: true,
+	}
+	agent := agentEntry{
+		run: service.AgentRun{
+			ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderCodex,
+			Task: "Rewrite the parser", CWD: "/work/alpha",
+		},
+		branch: "main",
+	}
+
+	tests := []struct {
+		name  string
+		entry agentEntry
+		query string
+		want  bool
+	}{
+		{name: "empty query matches a session", entry: session, query: "", want: true},
+		{name: "blank query matches an agent", entry: agent, query: "   ", want: true},
+		{name: "session name", entry: session, query: "ALP", want: true},
+		{name: "session branch", entry: session, query: "spawn/", want: true},
+		{name: "session cwd", entry: session, query: "/work/", want: true},
+		{name: "session ignores its provider label", entry: session, query: "session", want: false},
+		{name: "agent task is case-insensitive", entry: agent, query: "rewrite the parser", want: true},
+		{name: "agent provider", entry: agent, query: "codex", want: true},
+		{name: "agent branch", entry: agent, query: "main", want: true},
+		{name: "agent session name", entry: agent, query: "alpha", want: true},
+		{name: "no match", entry: agent, query: "gamma", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := entryMatchesFilter(tt.entry, tt.query); got != tt.want {
+				t.Fatalf("entryMatchesFilter(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+
+	if !sessionMatchesFilter(session, []agentEntry{agent}, "rewrite") {
+		t.Fatal("a session with a matching agent must stay visible")
+	}
+	if sessionMatchesFilter(session, []agentEntry{agent}, "gamma") {
+		t.Fatal("a session without any match must be filtered out")
+	}
+}
+
 func TestAgentDashboardSessionRowAttachesWithoutPaneAndCannotStop(t *testing.T) {
 	model := newAgentDashboardModel([]agentEntry{
 		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},

@@ -59,7 +59,12 @@ Color communicates state or focus. Do not add decorative hues.
 - Wide dashboard breakpoint: 86 columns. Above it, roster and detail sit side
   by side with the roster at 36% width. Below it, use a compact one-line roster
   above the detail pane.
-- Every view must be clipped to the current terminal width and height.
+- Every view must be clipped to the current terminal width and height. Each
+  pane also trims itself to the height it was given, and the body takes only
+  what the header, spawn target, filter bar, and footer leave behind, so a tall
+  roster or detail can never push the footer off the terminal. The detail pane
+  spends its rows on identity first and drops the output snapshot, heading
+  included, when nothing is left for it.
 
 ## Component patterns
 
@@ -83,6 +88,18 @@ Color communicates state or focus. Do not add decorative hues.
   tmux session.
 - Delegated runs sit directly below their parent with two more columns of
   indentation.
+- `/` opens an inline filter bar between the spawn target and the body. It is
+  not a modal: header, roster, detail, and footer keep rendering and the body
+  loses one row. A session stays listed when the query matches its name,
+  branch, or path, or when any of its agents matches by task, provider, branch,
+  or path. Matching is case-insensitive substring. `Enter` keeps the query and
+  returns to the roster; `Esc` clears it and hides the bar. The roster heading
+  becomes `SESSIONS  <visible> / <total>`, or
+  `SESSIONS  <start>–<end> / <rows> of <total>` when the filtered roster also
+  scrolls; both counts ignore closed sessions so they match the header. An
+  empty result reads `No sessions match this filter.`
+- The filter input owns its own width so a query longer than the terminal
+  scrolls inside the bar instead of running past the right edge.
 - The selected row uses `dashSelected`; unselected rows stay on the canvas.
 
 ### Open project picker
@@ -118,7 +135,11 @@ Color communicates state or focus. Do not add decorative hues.
 
 - `Tab` and `Shift+Tab` move between fields. Arrow keys act only on provider
   selectors. `Enter` submits. `Esc` cancels.
-- Footers list the available keys in interaction order.
+- On the roster, `Esc` clears an active filter before it quits the dashboard.
+  With no filter it quits, and `q` and `Ctrl-C` always quit.
+- Footers list the available keys in interaction order. A footer picks its
+  spelled-out or abbreviated form by measuring against the terminal width, not
+  from the 86-column layout breakpoint, so the last keys are never chopped off.
 - Busy actions replace the dashboard footer with `◌` and a plain status line.
 - Empty, running, idle/exited, missing, error, confirmation, and success states
   must remain visible and bounded at narrow terminal sizes.
