@@ -207,13 +207,6 @@ type GitInfo struct {
 	WorktreePath string // the worktree directory (only set when IsWorktree is true)
 }
 
-// DetectSessionGitInfo checks if a session's working directory is inside a git repo.
-// Returns the git toplevel path and current branch name, or empty strings if not a git repo.
-func DetectSessionGitInfo(sessionName string) (gitPath, branch string) {
-	info := DetectSessionGitInfoFull(sessionName)
-	return info.GitPath, info.Branch
-}
-
 // DetectSessionGitInfoFull checks if a session's working directory is inside a git repo
 // and detects whether it is a git worktree.
 func DetectSessionGitInfoFull(sessionName string) GitInfo {
@@ -332,15 +325,6 @@ func CleanupEmptyParents(dir string) {
 		}
 		dir = filepath.Dir(dir)
 	}
-}
-
-// CreateSession creates a new tmux session with a two-pane layout.
-// Returns an error if the session already exists.
-func CreateSession(name, dir, leftCmd, rightCmd string) error {
-	if tmuxpkg.SessionExists(name) {
-		return fmt.Errorf("session %q already exists", name)
-	}
-	return tmuxpkg.CreateTwoPaneSession(name, dir, leftCmd, rightCmd)
 }
 
 // InterruptPane sends Ctrl-C to a running agent without deleting its session or

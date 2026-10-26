@@ -42,6 +42,10 @@ Latest audit: 2026-10-26. Previous audit: 2026-07-25.
 | `tsp version` | never | `tsp -v` prints the same version. |
 | Dashboard delegation (`d`) | never | No delegated run ever reached the registry, `~/.tsp/delegate-output/` was never created, and the config never set `manager`. This removed child panes, the delegation prompt, stored delegate output, natural-language stop and cleanup routing, and the `manager` config section. Old `manager` keys still load and are ignored. Old delegated records are dropped when the registry loads. |
 
+Unreachable helpers left from earlier removals also went: the second directory
+walker in `internal/pathutil`, `ExpandEnvVar`, `DetectSessionGitInfo`,
+`CreateSession`, `GetPaneCwdByIndex`, and `oldConfigPath`.
+
 ## Removed on 2026-07-25
 
 | Command or feature | Reason |

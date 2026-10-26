@@ -150,11 +150,6 @@ func GetPaneCwd(session string) string {
 	return GetPaneCwdFor(session, Pane{Index: 0})
 }
 
-// GetPaneCwdByIndex returns the current working directory of a specific pane.
-func GetPaneCwdByIndex(session string, pane int) string {
-	return GetPaneCwdFor(session, Pane{Index: pane})
-}
-
 func GetPaneCwdFor(session string, pane Pane) string {
 	target := paneTarget(session, pane)
 	cmd := exec.Command("tmux", "display-message", "-t", target, "-p", "#{pane_current_path}")

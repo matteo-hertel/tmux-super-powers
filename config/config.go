@@ -226,9 +226,3 @@ func Repair(cfg *Config) ([]string, *Config) {
 	}
 	return changes, cfg
 }
-
-// oldConfigPath returns the legacy config file path (~/.tmux-super-powers.yaml).
-func oldConfigPath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".tmux-super-powers.yaml")
-}
