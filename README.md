@@ -147,7 +147,7 @@ YAML loader.
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.26+
 - tmux
 - Git for worktree-based agents
 - At least one configured agent CLI, such as `claude` or `codex`
