@@ -1,6 +1,6 @@
 # tmux-super-powers agent guide
 
-Keep this file and `CLAUDE.md` aligned.
+`CLAUDE.md` imports this file. Edit this one.
 
 ## Product
 
@@ -11,28 +11,32 @@ device pairing, CI watcher, or background polling.
 The product loop is:
 
 1. Find or create a project with `tsp dir`, dashboard Open, or `tsp project`.
-2. Spawn isolated coding agents with `tsp spawn`.
-3. Delegate follow-up jobs from the on-demand `tsp dash` roster.
-4. Attach, interrupt, or clean parent/child tmux and worktree resources explicitly.
+2. Spawn isolated coding agents with `tsp spawn` or dashboard New.
+3. Jump between sessions and agents from the on-demand `tsp dash` roster.
+4. Attach, interrupt, or clean tmux and worktree resources explicitly.
 
 ## Architecture
 
 ```text
 cmd/tsp/main.go
 └── internal/cmd/            Cobra commands and Bubble Tea TUIs
-    ├── dash.go              Parent/child agent roster and direct controls
+    ├── dash.go              Session and agent roster with direct controls
     ├── spawn.go             CLI adapter for agent creation
     ├── dir.go/project.go    Project navigation and creation
-    └── gtmux*.go/rm.go      Worktree and tmux lifecycle
+    └── config.go            Config editing and repair
 
 config/config.go             ~/.tsp/config.yaml load/default/repair
 internal/service/
-├── spawn.go                 Branch/worktree/session and in-place delegation
-├── agentrun.go              Durable parent/child run registry
-└── sessions.go              One-shot tmux/process/git inspection and actions
+├── spawn.go                 Branch, worktree, and session creation
+├── agentrun.go              Durable agent run registry
+├── sessions.go              One-shot tmux/process/git inspection and actions
+└── worktreetrash.go         Staged, detached worktree removal
 internal/tmux/tmux.go        Tmux command boundary
-internal/pathutil/           Path expansion and directory helpers
+internal/pathutil/           Path expansion helpers
 ```
+
+The TUIs use Charm v2: `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`,
+and `charm.land/lipgloss/v2`.
 
 Use `.interface-design/system.md` as the source of truth for dashboard layout,
 tokens, hierarchy, reusable controls, and keyboard interaction patterns.
@@ -50,19 +54,13 @@ refresh/action.
 |---|---|
 | `tsp dir` | Select and open a configured directory. |
 | `tsp project` | Create a project and tmux session. |
-| `tsp list` | Select any tmux session. |
 | `tsp spawn` | Create managed coding agents. |
-| `tsp dash` | Open projects; jump to sessions; spawn, delegate, attach, interrupt, clean, and refresh agents. |
-| `tsp rm` | Remove sessions with worktree awareness. |
-| `tsp cleanup` | Remove orphaned worktree-base entries. |
-| `tsp wtx-new` | Create manual worktree sessions. |
-| `tsp wtx-here` | Create a session for the current repository. |
-| `tsp wtx-rm` | Remove manual worktrees. |
-| `tsp middle` | Run a command in a tmux popup. |
+| `tsp dash` | Open projects; jump to sessions; spawn, attach, interrupt, clean, and refresh agents. |
 | `tsp config` | Edit or repair active configuration. |
-| `tsp version` | Print build version information. |
+| `tsp -v` | Print the build version. |
 
-See `docs/command-audit.md` before adding back overlapping commands.
+See `docs/command-audit.md` before adding back a removed command. It records
+what Matt uses and why each removed command went.
 
 ## API endpoints
 
@@ -74,15 +72,12 @@ None. `tsp` exposes no network server or remote-control API.
 |---|---|
 | `~/.tsp/config.yaml` | User configuration. |
 | `~/.tsp/agent-runs.json` | Durable metadata for agents created or observed by the dashboard. |
-| `~/.tsp/delegate-output/` | Final bounded scrollback from completed delegated panes. |
 | `spawn.worktree_base` | Parent directory for generated agent worktrees. |
 | `spawn.agent_command` | Primary agent used in the left 80% of new sessions. |
 | `spawn.claude_command` / `spawn.codex_command` | Provider choices in dashboard New. |
-| `manager.default_agent` | Default Claude or Codex provider for delegated jobs. |
-| `manager.claude` / `manager.codex` | Command and default model for each delegated provider. |
 
 Unknown legacy YAML keys are ignored, so old configurations containing
-`dash`, `serve`, `watcher`, or `sandbox` sections still load.
+`dash`, `serve`, `watcher`, `sandbox`, or `manager` sections still load.
 
 ## Development
 
@@ -106,35 +101,26 @@ Do not start a local server; the project has no server runtime.
 - The split must survive its agent. `shellCommandArgs` traps SIGINT and
   `exec`s the shell after the command, so an exited or interrupted agent leaves
   a shell in the same pane. Without the trap, Ctrl-C closes the pane.
-- `tsp spawn` and dashboard delegation pass prompts as shell-quoted CLI
-  arguments. Keep quoting in `internal/service/spawn.go`; do not restore
-  follow-up prompt injection with `tmux send-keys`.
-- Delegated runs open as new panes in their parent's tmux session. They share
-  the retained workspace and never own either resource. Parent and child agents
-  may run concurrently; let only the owning root run remove the worktree,
-  branch, and session.
-- Manager tasks with clear stop/cleanup intent route to native confirmed TSP
-  actions. Do not let a delegated model delete its own workspace.
-- A delegated command captures its bounded tmux scrollback before exiting, then
-  its temporary pane closes. Keep the stored output until the run is cleaned.
+- `tsp spawn` passes prompts as shell-quoted CLI arguments. Keep quoting in
+  `internal/service/spawn.go`; do not inject prompts with `tmux send-keys`.
 - Tmux pane indices move when panes open and close. Persist and target the
   stable `#{pane_id}` for managed runs; keep the index only for display and
   legacy registry entries.
-- Treat a stopped delegated row without a pane ID as output-only. Its old pane
-  index may now belong to a different process.
 - A pane id identifies a run. A managed agent still running its chained
   install/setup command looks like a plain shell, so an observation must never
   mint a second run for a pane a managed run already holds, in either
   direction. `MergePaneDuplicates` folds records left by older versions.
-  An agent restarted in the same pane keeps its run. A managed root run whose
-  pane closed moves onto the agent now running in its session.
+  An agent restarted in the same pane keeps its run. A managed run whose pane
+  closed moves onto the agent now running in its session.
+- Older registries can hold delegated child runs, marked by `parentRunId`.
+  `readAgentRunFile` drops them on load. Loaded as normal runs, they would
+  claim their parent's worktree and live pane.
 - The registry file is shared. Every process merges the file back in before
   writing, so a long-lived `tsp dash` cannot overwrite runs a concurrent
   `tsp spawn` created.
 - Roster snapshots are bounded (`BuildPreviewCaptureArgs`, `capture-pane -S -400`).
   The dashboard reads every pane of every session on each refresh and renders
-  only a tail, so never restore `-S -` there. A delegated run's final output
-  still captures the full scrollback in `internal/service/spawn.go`.
+  only a tail, so never restore `-S -` there.
   Keep command output attached to the pane by passing `$SHELL -c` as explicit
   tmux command arguments.
 - A managed agent can outlive its process in the roster. This is intentional so
@@ -150,7 +136,7 @@ Do not start a local server; the project has no server runtime.
   hundreds of thousands of files, so `KillSession` renames it to a
   `.tsp-trash-*` sibling (constant time) and unlinks it in a detached process.
   Keep the rename on the same filesystem or it silently becomes a copy.
-  `tsp cleanup` sweeps staged directories left by an interrupted run.
+  `tsp dash` sweeps staged directories left by an interrupted run when it opens.
 - Cleanup removes the directory whenever the entry sits in a git worktree, not
   only for managed runs. `agentEntry.isWorktree` comes from
   `DetectSessionGitInfoFull`; never infer a removable worktree from a pane cwd,

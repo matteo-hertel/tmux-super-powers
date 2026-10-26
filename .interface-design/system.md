@@ -4,12 +4,12 @@
 
 `tsp dash` is a keyboard-first control surface for Matt while he is already
 working inside tmux. It should feel dense, calm, immediate, and native to the
-terminal. The task being entered is always the focal point. Provider, model,
-path, branch, command, and workspace context support it without competing.
+terminal. The task being entered is always the focal point. Provider, path,
+branch, command, and workspace context support it without competing.
 
 The signature interaction is an inline `‹ CLAUDE ›` / `‹ CODEX ›` provider
 selector beside an editable run-specific setting and a visible command
-preview. Use the same pattern in Spawn and Delegate forms.
+preview, as in the Spawn form.
 
 ## Product world
 
@@ -84,10 +84,7 @@ Color communicates state or focus. Do not add decorative hues.
 - Status glyphs are `●` running, `◌` present but idle/exited, and `○` missing.
   A session row is running when any of its agents runs.
 - `Enter` on a session row switches to the session without choosing a pane.
-  Stop and delegate need an agent row; `x` on a session row removes only the
-  tmux session.
-- Delegated runs sit directly below their parent with two more columns of
-  indentation.
+  Stop needs an agent row; `x` on a session row removes only the tmux session.
 - `/` opens an inline filter bar between the spawn target and the body. It is
   not a modal: header, roster, detail, and footer keep rendering and the body
   loses one row. A session stays listed when the query matches its name,
@@ -120,17 +117,6 @@ Color communicates state or focus. Do not add decorative hues.
   project is a git repository. Empty uses the current branch.
 - Show the exact configured provider command below the fields.
 
-### Delegate form
-
-- Field order: Task, Agent, Model.
-- Provider changes load that provider's configured default model. The model
-  remains editable for the current run.
-- Keep workspace and parent context visible below the fields.
-- Show a shell-safe command preview with `<delegation prompt>` in place of the
-  generated prompt.
-- A delegated tmux pane is temporary. Close it when the agent exits and retain
-  its final bounded scrollback in the dashboard run record.
-
 ### Controls and states
 
 - `Tab` and `Shift+Tab` move between fields. Arrow keys act only on provider
@@ -147,7 +133,7 @@ Color communicates state or focus. Do not add decorative hues.
 ## Verification
 
 - Keep unit coverage for focus order, provider changes, configured commands,
-  branch/model values, and terminal bounds.
+  base branch values, and terminal bounds.
 - Smoke-test modal rendering at about 120×42 and the compact dashboard at or
   below 72 columns.
 - In monochrome, title, selected row, active status, task field, and footer

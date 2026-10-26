@@ -1,24 +1,16 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "tsp",
-	Short: "Manage tmux projects, worktrees, and coding agents",
-	Long:  `tmux-super-powers (tsp) keeps project navigation, tmux sessions, git worktrees, and local coding agents in one focused CLI.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		versionFlag, _ := cmd.Flags().GetBool("version")
-		if versionFlag {
-			fmt.Printf("tsp version %s\n", getVersion())
-			os.Exit(0)
-		}
-		cmd.Help()
-	},
+	Use:     "tsp",
+	Short:   "Manage tmux projects, worktrees, and coding agents",
+	Long:    `tmux-super-powers (tsp) keeps project navigation, tmux sessions, git worktrees, and local coding agents in one focused CLI.`,
+	Version: getVersion(),
 }
 
 func Execute() error {
@@ -26,20 +18,21 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(dirCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(configCmd)
-	rootCmd.AddCommand(wtxNewCmd)
-	rootCmd.AddCommand(wtxHereCmd)
-	rootCmd.AddCommand(wtxRmCmd)
-	rootCmd.AddCommand(middleCmd)
-	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(dashCmd)
 	rootCmd.AddCommand(spawnCmd)
-	rootCmd.AddCommand(rmCmd)
-	rootCmd.AddCommand(cleanupCmd)
 
-	// Add version flag
-	rootCmd.Flags().BoolP("version", "v", false, "Show version information")
+	// Cobra adds --version/-v from the Version field.
+	rootCmd.SetVersionTemplate("tsp version {{.Version}}\n")
+}
+
+func getVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "(devel)" && info.Main.Version != "" {
+			return info.Main.Version
+		}
+	}
+	return "dev"
 }

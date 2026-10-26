@@ -128,32 +128,6 @@ func TestBuildSessionArgs_NoCommand(t *testing.T) {
 	}
 }
 
-func TestBuildPopupArgs_DefaultSize(t *testing.T) {
-	args := BuildPopupArgs("htop", 75, 75)
-	expected := []string{"display-popup", "-E", "-w", "75%", "-h", "75%", "htop"}
-	if len(args) != len(expected) {
-		t.Fatalf("BuildPopupArgs length = %d, want %d", len(args), len(expected))
-	}
-	for i, a := range args {
-		if a != expected[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
-		}
-	}
-}
-
-func TestBuildPopupArgs_CustomSize(t *testing.T) {
-	args := BuildPopupArgs("lazydocker", 90, 60)
-	expected := []string{"display-popup", "-E", "-w", "90%", "-h", "60%", "lazydocker"}
-	if len(args) != len(expected) {
-		t.Fatalf("BuildPopupArgs length = %d, want %d", len(args), len(expected))
-	}
-	for i, a := range args {
-		if a != expected[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, a, expected[i])
-		}
-	}
-}
-
 func TestIsInsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-501/default,12345,0")
 	if !IsInsideTmux() {
@@ -200,56 +174,6 @@ func TestBuildTwoPaneSplitArgsUsesTwentyPercentRightPane(t *testing.T) {
 		if arg != expected[i] {
 			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
 		}
-	}
-}
-
-func TestBuildSplitPaneArgsTargetsParentPane(t *testing.T) {
-	t.Setenv("SHELL", "/bin/sh")
-	args := BuildSplitPaneArgs("project-task:0.1", "/work/project-task", "claude -p 'check CI'")
-	expected := []string{
-		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
-		"-t", "project-task:0.1", "-c", "/work/project-task", "/bin/sh", "-c", "claude -p 'check CI'",
-	}
-	if len(args) != len(expected) {
-		t.Fatalf("BuildSplitPaneArgs length = %d, want %d", len(args), len(expected))
-	}
-	for i, arg := range args {
-		if arg != expected[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, arg, expected[i])
-		}
-	}
-}
-
-func TestSplitPaneUsesStableIDAfterPaneIndicesMove(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not installed")
-	}
-	t.Setenv("SHELL", "/bin/sh")
-	session := fmt.Sprintf("tsp-pane-id-test-%d", time.Now().UnixNano())
-	if err := CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
-		t.Fatalf("CreateTwoPaneSession() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = KillSession(session)
-	})
-
-	delegated, err := SplitPane(session, Pane{Index: 0}, t.TempDir(), "printf 'done\\n'")
-	if err != nil {
-		t.Fatalf("SplitPane() error = %v", err)
-	}
-	if delegated.ID == "" {
-		t.Fatal("SplitPane() returned an empty pane ID")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && PaneExists(session, delegated) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if PaneExists(session, delegated) {
-		t.Fatal("completed pane still exists by stable ID")
-	}
-	if !PaneExists(session, Pane{Index: delegated.Index}) {
-		t.Fatal("expected the shell pane to reuse the completed pane index")
 	}
 }
 

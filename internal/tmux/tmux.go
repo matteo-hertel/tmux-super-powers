@@ -58,34 +58,6 @@ func BuildNewSessionArgs(name, dir, command string) []string {
 	return args
 }
 
-func BuildSplitPaneArgs(target, dir, command string) []string {
-	args := []string{
-		"split-window", "-v", "-P", "-F", "#{pane_id}\t#{pane_index}",
-		"-t", target, "-c", dir,
-	}
-	if command != "" {
-		args = append(args, "/bin/sh", "-c", command)
-	}
-	return args
-}
-
-func SplitPane(session string, parentPane Pane, dir, command string) (Pane, error) {
-	target := paneTarget(session, parentPane)
-	out, err := exec.Command("tmux", BuildSplitPaneArgs(target, dir, command)...).CombinedOutput()
-	if err != nil {
-		return Pane{}, fmt.Errorf("failed to split pane: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return Pane{}, fmt.Errorf("read split pane target: %q", strings.TrimSpace(string(out)))
-	}
-	paneIndex, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return Pane{}, fmt.Errorf("read split pane index: %w", err)
-	}
-	return Pane{ID: parts[0], Index: paneIndex}, nil
-}
-
 func PaneExists(session string, pane Pane) bool {
 	for _, candidate := range Panes(session) {
 		if pane.ID != "" {
@@ -121,47 +93,12 @@ func Panes(session string) []Pane {
 	return panes
 }
 
-func KillPane(session string, pane Pane) error {
-	if !SessionExists(session) || !PaneExists(session, pane) {
-		return nil
-	}
-	target := paneTarget(session, pane)
-	if err := exec.Command("tmux", "kill-pane", "-t", target).Run(); err != nil {
-		return fmt.Errorf("kill pane %s: %w", target, err)
-	}
-	return nil
-}
-
 func SelectPane(session string, pane Pane) error {
 	target := paneTarget(session, pane)
 	if err := exec.Command("tmux", "select-pane", "-t", target).Run(); err != nil {
 		return fmt.Errorf("select pane %s: %w", target, err)
 	}
 	return nil
-}
-
-// BuildPopupArgs builds the tmux args for display-popup.
-func BuildPopupArgs(command string, width, height int) []string {
-	return []string{
-		"display-popup", "-E",
-		"-w", fmt.Sprintf("%d%%", width),
-		"-h", fmt.Sprintf("%d%%", height),
-		command,
-	}
-}
-
-// RunPopup runs a command in a tmux display-popup overlay.
-// If detach is true, the popup is launched in the background and control returns immediately.
-func RunPopup(command string, width, height int, detach bool) error {
-	args := BuildPopupArgs(command, width, height)
-	cmd := exec.Command("tmux", args...)
-	if detach {
-		return cmd.Start()
-	}
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 // PreviewCaptureLines bounds the roster snapshot. The dashboard renders at most

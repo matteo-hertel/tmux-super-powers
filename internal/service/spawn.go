@@ -72,69 +72,6 @@ type SpawnResult struct {
 	Error        string `json:"error,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
 	GitPath      string `json:"gitPath,omitempty"`
-	OutputPath   string `json:"outputPath,omitempty"`
-	AgentRunID   string `json:"agentRunId,omitempty"`
-}
-
-// SpawnDelegatedAgent starts a short-lived agent in an existing workspace. It
-// deliberately creates no branch or worktree: the caller records the new run
-// as a child of the run that owns the workspace.
-func SpawnDelegatedAgent(task, prompt, dir, session string, parentPane tmuxpkg.Pane, branch, gitPath, agentCommand, model string) (SpawnResult, error) {
-	dir = pathutil.ExpandPath(strings.TrimSpace(dir))
-	result := SpawnResult{
-		Task:         task,
-		Branch:       branch,
-		Session:      session,
-		WorktreePath: dir,
-		GitPath:      gitPath,
-	}
-	if dir == "" {
-		return result, fmt.Errorf("delegation workspace is required")
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return result, fmt.Errorf("delegation workspace: %w", err)
-	}
-	if !info.IsDir() {
-		return result, fmt.Errorf("delegation workspace is not a directory: %s", dir)
-	}
-	agentCommand = strings.TrimSpace(agentCommand)
-	if agentCommand == "" {
-		return result, fmt.Errorf("manager agent command is required")
-	}
-	if strings.TrimSpace(session) == "" {
-		return result, fmt.Errorf("parent tmux session is required")
-	}
-	if parentPane.ID == "" && parentPane.Index < 0 {
-		return result, fmt.Errorf("parent tmux pane is required")
-	}
-	if !tmuxpkg.SessionExists(session) {
-		return result, fmt.Errorf("parent tmux session %q does not exist", session)
-	}
-	targetPane := parentPane
-	if !tmuxpkg.PaneExists(session, targetPane) {
-		panes := tmuxpkg.Panes(session)
-		if len(panes) == 0 {
-			return result, fmt.Errorf("parent tmux session %q has no panes", session)
-		}
-		targetPane = panes[0]
-	}
-
-	outputPath, err := createDelegatedOutputFile()
-	if err != nil {
-		return result, err
-	}
-	result.OutputPath = outputPath
-	result.Command = "(" + BuildManagerAgentCommand(agentCommand, model, prompt) + "); tsp_status=$?; tmux capture-pane -t \"$TMUX_PANE\" -p -e -S - > " + shellQuote(outputPath) + "; exit $tsp_status"
-	pane, err := tmuxpkg.SplitPane(session, targetPane, dir, result.Command)
-	if err != nil {
-		_ = os.Remove(outputPath)
-		return result, fmt.Errorf("delegated pane creation failed: %w", err)
-	}
-	result.PaneIndex = pane.Index
-	result.PaneID = pane.ID
-	result.Status = "ok"
-	return result, nil
 }
 
 // SpawnAgents deploys agents with tasks into worktrees (git repos) or
@@ -295,38 +232,6 @@ func buildLaunchCommand(install, setup, agent string) string {
 	return "if " + strings.Join(steps, " && ") + "; then " + agent + "; fi"
 }
 
-func BuildManagerAgentCommand(command, model, prompt string) string {
-	command = strings.TrimSpace(command)
-	if strings.TrimSpace(model) != "" {
-		command += " --model " + shellQuote(strings.TrimSpace(model))
-	}
-	return command + " " + shellQuote(prompt)
-}
-
-func createDelegatedOutputFile() (string, error) {
-	dir := delegatedOutputDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create delegated output directory: %w", err)
-	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return "", fmt.Errorf("protect delegated output directory: %w", err)
-	}
-	file, err := os.CreateTemp(dir, "delegate-*.log")
-	if err != nil {
-		return "", fmt.Errorf("create delegated output file: %w", err)
-	}
-	path := file.Name()
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("close delegated output file: %w", err)
-	}
-	return path, nil
-}
-
-func delegatedOutputDir() string {
-	return filepath.Join(config.TspDir(), "delegate-output")
-}
-
 func paneIDAtIndex(session string, index int) string {
 	for _, pane := range tmuxpkg.Panes(session) {
 		if pane.Index == index {
@@ -334,29 +239,6 @@ func paneIDAtIndex(session string, index int) string {
 		}
 	}
 	return ""
-}
-
-func delegatedOutputTarget(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", nil
-	}
-	base, err := filepath.Abs(delegatedOutputDir())
-	if err != nil {
-		return "", fmt.Errorf("resolve delegated output directory: %w", err)
-	}
-	target, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve delegated output path: %w", err)
-	}
-	relative, err := filepath.Rel(base, target)
-	if err != nil || filepath.IsAbs(relative) || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("refusing to remove delegated output outside %s", base)
-	}
-	name := filepath.Base(target)
-	if !strings.HasPrefix(name, "delegate-") || filepath.Ext(name) != ".log" {
-		return "", fmt.Errorf("refusing to remove unrecognized delegated output %s", target)
-	}
-	return target, nil
 }
 
 func spawnGetRepoRoot() (string, error) {

@@ -22,7 +22,6 @@ const (
 // AgentRun is the durable identity for one controllable agent pane.
 type AgentRun struct {
 	ID           string    `json:"id"`
-	ParentRunID  string    `json:"parentRunId,omitempty"`
 	Provider     string    `json:"provider"`
 	Task         string    `json:"task,omitempty"`
 	SessionName  string    `json:"sessionName"`
@@ -33,7 +32,6 @@ type AgentRun struct {
 	Branch       string    `json:"branch,omitempty"`
 	WorktreePath string    `json:"worktreePath,omitempty"`
 	GitPath      string    `json:"gitPath,omitempty"`
-	OutputPath   string    `json:"outputPath,omitempty"`
 	Status       string    `json:"status"`
 	StartedAt    time.Time `json:"startedAt"`
 	LastSeenAt   time.Time `json:"lastSeenAt"`
@@ -55,6 +53,34 @@ type ObservedAgentRun struct {
 
 type agentRunFile struct {
 	Runs []AgentRun `json:"runs"`
+}
+
+// storedAgentRun reads one record from the registry file. Older versions could
+// delegate child agents into a parent's worktree; those records carry a parent
+// id and must never be mistaken for the run that owns the workspace.
+type storedAgentRun struct {
+	AgentRun
+	LegacyParentRunID string `json:"parentRunId,omitempty"`
+}
+
+// readAgentRunFile decodes the registry and drops legacy delegated children.
+// Their temporary panes are gone, and as root runs they would claim the
+// parent's worktree on cleanup.
+func readAgentRunFile(data []byte) ([]AgentRun, error) {
+	var stored struct {
+		Runs []storedAgentRun `json:"runs"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return nil, err
+	}
+	runs := make([]AgentRun, 0, len(stored.Runs))
+	for _, run := range stored.Runs {
+		if run.LegacyParentRunID != "" {
+			continue
+		}
+		runs = append(runs, run.AgentRun)
+	}
+	return runs, nil
 }
 
 // AgentRunRegistry stores agent runs in memory and persists them as JSON.
@@ -81,11 +107,11 @@ func NewAgentRunRegistry(path string) (*AgentRunRegistry, error) {
 		}
 		return nil, err
 	}
-	var stored agentRunFile
-	if err := json.Unmarshal(data, &stored); err != nil {
+	stored, err := readAgentRunFile(data)
+	if err != nil {
 		return nil, err
 	}
-	for _, run := range MergePaneDuplicates(stored.Runs) {
+	for _, run := range MergePaneDuplicates(stored) {
 		if run.ID == "" {
 			continue
 		}
@@ -108,7 +134,7 @@ func (r *AgentRunRegistry) UpsertObserved(obs ObservedAgentRun, now time.Time) (
 	if matched, ok := r.runs[id]; !ok || !matched.Managed {
 		if orphan := r.findOrphanedManagedLocked(obs); orphan != "" {
 			if ok {
-				r.foldRunLocked(id, orphan)
+				r.foldRunLocked(id)
 			}
 			id = orphan
 		}
@@ -197,7 +223,7 @@ func (r *AgentRunRegistry) findOrphanedManagedLocked(obs ObservedAgentRun) strin
 	}
 	var best AgentRun
 	for _, run := range r.runs {
-		if run.SessionName != obs.SessionName || !run.Managed || run.ParentRunID != "" || run.PaneID == "" || live[run.PaneID] {
+		if run.SessionName != obs.SessionName || !run.Managed || run.PaneID == "" || live[run.PaneID] {
 			continue
 		}
 		if best.ID == "" || run.StartedAt.After(best.StartedAt) {
@@ -207,13 +233,7 @@ func (r *AgentRunRegistry) findOrphanedManagedLocked(obs ObservedAgentRun) strin
 	return best.ID
 }
 
-func (r *AgentRunRegistry) foldRunLocked(from, into string) {
-	for id, run := range r.runs {
-		if run.ParentRunID == from {
-			run.ParentRunID = into
-			r.runs[id] = run
-		}
-	}
+func (r *AgentRunRegistry) foldRunLocked(from string) {
 	delete(r.runs, from)
 	r.removed[from] = true
 }
@@ -240,7 +260,7 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 	// adopt any run already holding it instead of minting a second identity.
 	var id string
 	for candidateID, run := range r.runs {
-		if run.SessionName != result.Session || run.ParentRunID != "" {
+		if run.SessionName != result.Session {
 			continue
 		}
 		if result.PaneID != "" && run.PaneID != "" {
@@ -261,7 +281,6 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 		run.StartedAt = now
 	}
 	run.ID = id
-	run.ParentRunID = ""
 	run.Provider = provider
 	run.Task = result.Task
 	run.SessionName = result.Session
@@ -280,83 +299,6 @@ func (r *AgentRunRegistry) RegisterManaged(result SpawnResult, provider string, 
 	return run, r.saveLocked()
 }
 
-// RegisterDelegated records an agent that continues work in an existing
-// managed workspace. Delegated runs share their parent's files and branch; they
-// never own or remove that workspace themselves.
-func (r *AgentRunRegistry) RegisterDelegated(result SpawnResult, provider, parentRunID string, paneIndex int, now time.Time) (AgentRun, error) {
-	if r == nil {
-		return AgentRun{}, fmt.Errorf("agent run registry is nil")
-	}
-	if parentRunID == "" {
-		return AgentRun{}, fmt.Errorf("parent agent run is required")
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if provider == "" {
-		provider = AgentProviderFallback
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.runs[parentRunID]; !ok {
-		return AgentRun{}, fmt.Errorf("parent agent run %q was not found", parentRunID)
-	}
-
-	id := newAgentRunID()
-	run := AgentRun{
-		ID:           id,
-		ParentRunID:  parentRunID,
-		Provider:     provider,
-		Task:         result.Task,
-		SessionName:  result.Session,
-		PaneIndex:    paneIndex,
-		PaneID:       result.PaneID,
-		CWD:          result.WorktreePath,
-		Branch:       result.Branch,
-		WorktreePath: result.WorktreePath,
-		GitPath:      result.GitPath,
-		OutputPath:   result.OutputPath,
-		Status:       "starting",
-		StartedAt:    now,
-		LastSeenAt:   now,
-		Managed:      true,
-	}
-	r.runs[id] = run
-
-	return run, r.saveLocked()
-}
-
-func (r *AgentRunRegistry) Descendants(id string) []AgentRun {
-	if r == nil || id == "" {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	children := make(map[string][]AgentRun)
-	for _, run := range r.runs {
-		if run.ParentRunID != "" {
-			children[run.ParentRunID] = append(children[run.ParentRunID], run)
-		}
-	}
-	var descendants []AgentRun
-	seen := map[string]bool{id: true}
-	var walk func(string)
-	walk = func(parentID string) {
-		for _, child := range children[parentID] {
-			if seen[child.ID] {
-				continue
-			}
-			seen[child.ID] = true
-			walk(child.ID)
-			descendants = append(descendants, child)
-		}
-	}
-	walk(id)
-	return descendants
-}
-
 // Delete forgets a managed agent after its session/worktree has been removed.
 func (r *AgentRunRegistry) Delete(id string) error {
 	if r == nil || id == "" {
@@ -364,26 +306,12 @@ func (r *AgentRunRegistry) Delete(id string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	run, ok := r.runs[id]
-	if !ok {
+	if _, ok := r.runs[id]; !ok {
 		return nil
-	}
-	outputPath, err := delegatedOutputTarget(run.OutputPath)
-	if err != nil {
-		return err
 	}
 	delete(r.runs, id)
 	r.removed[id] = true
-	if err := r.saveLocked(); err != nil {
-		return err
-	}
-	if outputPath == "" {
-		return nil
-	}
-	if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stored agent output: %w", err)
-	}
-	return nil
+	return r.saveLocked()
 }
 
 func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time) error {
@@ -414,16 +342,6 @@ func (r *AgentRunRegistry) MarkUnseenStopped(seen map[string]bool, now time.Time
 		return nil
 	}
 	return r.saveLocked()
-}
-
-func (r *AgentRunRegistry) Find(id string) (AgentRun, bool) {
-	if r == nil {
-		return AgentRun{}, false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	run, ok := r.runs[id]
-	return run, ok
 }
 
 func (r *AgentRunRegistry) List() []AgentRun {
@@ -463,11 +381,11 @@ func (r *AgentRunRegistry) syncFromDiskLocked() {
 	if err != nil {
 		return
 	}
-	var stored agentRunFile
-	if err := json.Unmarshal(data, &stored); err != nil {
+	stored, err := readAgentRunFile(data)
+	if err != nil {
 		return
 	}
-	for _, run := range stored.Runs {
+	for _, run := range stored {
 		if run.ID == "" || r.removed[run.ID] {
 			continue
 		}
@@ -551,7 +469,6 @@ func MergePaneDuplicates(runs []AgentRun) []AgentRun {
 		grouped[key] = append(grouped[key], run)
 	}
 
-	folded := make(map[string]string)
 	for _, key := range order {
 		group := grouped[key]
 		if len(group) == 1 {
@@ -569,23 +486,9 @@ func MergePaneDuplicates(runs []AgentRun) []AgentRun {
 		})
 		primary := group[0]
 		for _, run := range group[1:] {
-			folded[run.ID] = primary.ID
 			primary = absorbRun(primary, run)
 		}
 		merged = append(merged, primary)
-	}
-
-	if len(folded) > 0 {
-		for index, run := range merged {
-			target, ok := folded[run.ParentRunID]
-			if !ok {
-				continue
-			}
-			if target == run.ID {
-				target = ""
-			}
-			merged[index].ParentRunID = target
-		}
 	}
 	sortRuns(merged)
 	return merged
@@ -611,16 +514,12 @@ func absorbRun(primary, other AgentRun) AgentRun {
 			primary.Provider = other.Provider
 		}
 	}
-	if primary.ParentRunID == "" {
-		primary.ParentRunID = other.ParentRunID
-	}
 	primary.Managed = primary.Managed || other.Managed
 	primary.Task = firstNonEmptyField(primary.Task, other.Task)
 	primary.CWD = firstNonEmptyField(primary.CWD, other.CWD)
 	primary.Branch = firstNonEmptyField(primary.Branch, other.Branch)
 	primary.WorktreePath = firstNonEmptyField(primary.WorktreePath, other.WorktreePath)
 	primary.GitPath = firstNonEmptyField(primary.GitPath, other.GitPath)
-	primary.OutputPath = firstNonEmptyField(primary.OutputPath, other.OutputPath)
 	return primary
 }
 

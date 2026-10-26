@@ -23,72 +23,6 @@ func TestAgentDashboardDoesNotPoll(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgentsReadsStoredOutputAfterDelegatedPaneCloses(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not installed")
-	}
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("SHELL", "/bin/sh")
-	dir := t.TempDir()
-	session := fmt.Sprintf("tsp-dash-output-test-%d", time.Now().UnixNano())
-	if err := tmuxpkg.CreateTwoPaneSession(session, dir, "sleep 5", ""); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = tmuxpkg.KillSession(session)
-	})
-	panes := tmuxpkg.Panes(session)
-	if len(panes) != 2 {
-		t.Fatalf("pane count = %d, want 2", len(panes))
-	}
-	parentPane := panes[0]
-	for _, pane := range panes {
-		if pane.Index == 0 {
-			parentPane = pane
-		}
-	}
-	registry, err := service.NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := registry.RegisterManaged(service.SpawnResult{
-		Task: "root", Session: session, PaneIndex: parentPane.Index, PaneID: parentPane.ID, WorktreePath: dir,
-	}, service.AgentProviderCodex, parentPane.Index, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := service.SpawnDelegatedAgent(
-		"child", "child", dir, session, parentPane, "main", "",
-		"sh -c 'printf delegate-finished' placeholder", "",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := registry.RegisterDelegated(result, service.AgentProviderClaude, root.ID, result.PaneIndex, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPane := tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && tmuxpkg.PaneExists(session, childPane) {
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	agents, err := discoverAgents(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, agent := range agents {
-		if agent.run.ID == child.ID {
-			if !strings.Contains(agent.output, "delegate-finished") {
-				t.Fatalf("stored delegated output = %q", agent.output)
-			}
-			return
-		}
-	}
-	t.Fatalf("delegated run %q was not discovered", child.ID)
-}
-
 func TestAgentDashboardKeepsSelectionVisibleAndInsideTerminal(t *testing.T) {
 	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
 	model.width = 96
@@ -494,7 +428,7 @@ func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
 		t.Fatalf("h did not fold back to the session: selected %q, rows %s", selected.key(), visible(model))
 	}
 
-	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Delegated agent started", selectedID: "run-a"})
+	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Agent spawned", selectedID: "run-a"})
 	model = next.(agentDashboardModel)
 	if selected, _ := model.selected(); selected.key() != "run-a" {
 		t.Fatalf("new agent in a collapsed session was not revealed: %q", selected.key())
@@ -936,7 +870,7 @@ func TestAgentDashboardKeepsFooterVisibleAtShortHeights(t *testing.T) {
 		{
 			run: service.AgentRun{
 				ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderClaude,
-				Task: "rewrite the parser", CWD: "/work/alpha", ParentRunID: "",
+				Task: "rewrite the parser", CWD: "/work/alpha",
 			},
 			branch: "main", live: true, sessionExists: true,
 			output: strings.Repeat("agent output line\n", 60),
@@ -1103,56 +1037,6 @@ func TestAgentDashboardClosedSessionDoesNotAdvertiseOrSilentlyIgnoreAttach(t *te
 	}
 }
 
-func TestAgentDashboardDoesNotSelectPaneForCompletedLegacyChild(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID: "child", ParentRunID: "root", SessionName: "shared-session", PaneIndex: 1, Status: "stopped", Managed: true,
-		},
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(agentDashboardModel)
-	if got.attachSession != "shared-session" || got.attachPane.Index != -1 {
-		t.Fatalf("completed child attach target = %s:%d", got.attachSession, got.attachPane.Index)
-	}
-}
-
-func TestRemoveDelegatedRunDoesNotKillPaneForStoppedLegacyChild(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not installed")
-	}
-	t.Setenv("SHELL", "/bin/sh")
-	session := fmt.Sprintf("tsp-legacy-clean-test-%d", time.Now().UnixNano())
-	if err := tmuxpkg.CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = tmuxpkg.KillSession(session)
-	})
-	registry, err := service.NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	registryRoot, err := registry.RegisterManaged(service.SpawnResult{Session: session}, service.AgentProviderCodex, 0, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := registry.RegisterDelegated(service.SpawnResult{Session: session}, service.AgentProviderClaude, registryRoot.ID, 1, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.MarkUnseenStopped(map[string]bool{registryRoot.ID: true}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	legacy, _ = registry.Find(legacy.ID)
-	if err := removeDelegatedRun(registry, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if len(tmuxpkg.Panes(session)) != 2 {
-		t.Fatal("legacy cleanup killed the pane that reused its index")
-	}
-}
-
 func TestProviderFromCommand(t *testing.T) {
 	tests := map[string]string{
 		"claude --dangerously-skip-permissions": service.AgentProviderClaude,
@@ -1164,254 +1048,6 @@ func TestProviderFromCommand(t *testing.T) {
 		if got := providerFromCommand(command); got != want {
 			t.Errorf("providerFromCommand(%q) = %q, want %q", command, got, want)
 		}
-	}
-}
-
-func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
-	cfg := &config.Config{Manager: config.ManagerConfig{
-		DefaultAgent: config.AgentClaude,
-		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
-		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
-	}}
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "implement the feature",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		sessionExists: true,
-	}}, cfg, nil, "/repo")
-
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	if cmd != nil {
-		t.Fatal("opening delegate form returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	if got.mode != dashAgentsDelegate {
-		t.Fatalf("mode = %v, want dashAgentsDelegate", got.mode)
-	}
-	if !got.taskInput.Focused() {
-		t.Fatal("delegation task input should be focused")
-	}
-	if got.managerAgent != config.AgentClaude || got.modelInput.Value() != "haiku" {
-		t.Fatalf("manager defaults = %s/%s, want claude/haiku", got.managerAgent, got.modelInput.Value())
-	}
-}
-
-func TestAgentDashboardChoosesManagerAgentAndModel(t *testing.T) {
-	cfg := &config.Config{Manager: config.ManagerConfig{
-		DefaultAgent: config.AgentClaude,
-		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
-		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
-	}}
-	model := newAgentDashboardModel([]agentEntry{{
-		run:           service.AgentRun{SessionName: "feature", CWD: "/repo"},
-		sessionExists: true,
-	}}, cfg, nil, "/repo")
-
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	got := next.(agentDashboardModel)
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
-	got = next.(agentDashboardModel)
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
-	got = next.(agentDashboardModel)
-	if got.managerAgent != config.AgentCodex || got.modelInput.Value() != "gpt-5.6-luna" {
-		t.Fatalf("manager selection = %s/%s, want codex/gpt-5.6-luna", got.managerAgent, got.modelInput.Value())
-	}
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
-	got = next.(agentDashboardModel)
-	if !got.modelInput.Focused() {
-		t.Fatal("model input should be focused")
-	}
-	view := got.renderDelegate()
-	if !strings.Contains(view, "CODEX") || !strings.Contains(view, "gpt-5.6-luna") {
-		t.Fatalf("delegate form did not render the selected agent and model: %q", view)
-	}
-}
-
-func TestAgentDashboardAllowsDelegationWhileParentRuns(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "implement the feature",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		live:          true,
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	if cmd != nil {
-		t.Fatal("opening manager task returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	got.taskInput.SetValue("make CI green")
-	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("delegation did not return a command")
-	}
-	got = next.(agentDashboardModel)
-	if !got.busy {
-		t.Fatal("dashboard should be busy while the delegated child starts")
-	}
-	if got.statusMessage != "Starting delegated agent…" {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestAgentDashboardRoutesCleanupLanguageToConfirmation(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "finished task",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	got := next.(agentDashboardModel)
-	got.taskInput.SetValue("delete this worktree")
-	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("cleanup routing returned an unexpected command before confirmation")
-	}
-	got = next.(agentDashboardModel)
-	if got.mode != dashAgentsConfirmCleanup {
-		t.Fatalf("mode = %v, want dashAgentsConfirmCleanup", got.mode)
-	}
-	if !strings.Contains(got.statusMessage, "confirmed TSP action") {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestClassifyManagerTask(t *testing.T) {
-	tests := []struct {
-		task string
-		want managerTaskIntent
-	}{
-		{task: "make sure CI is green", want: managerIntentDelegate},
-		{task: "remove the dead code", want: managerIntentDelegate},
-		{task: "clean up the failing tests", want: managerIntentDelegate},
-		{task: "delete the stale feature branch after merging", want: managerIntentDelegate},
-		{task: "delete this worktree", want: managerIntentCleanup},
-		{task: "remove the agent workspace", want: managerIntentCleanup},
-		{task: "stop this agent", want: managerIntentStop},
-		{task: "kill the current process", want: managerIntentStop},
-	}
-	for _, test := range tests {
-		t.Run(test.task, func(t *testing.T) {
-			if got := classifyManagerTask(test.task); got != test.want {
-				t.Fatalf("classifyManagerTask(%q) = %v, want %v", test.task, got, test.want)
-			}
-		})
-	}
-}
-
-func TestBuildDelegationPromptIncludesDurableContextAndSafetyBoundary(t *testing.T) {
-	parent := agentEntry{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Provider:     service.AgentProviderCodex,
-			Task:         "replace the dashboard",
-			CWD:          "/work/dashboard",
-			WorktreePath: "/work/dashboard",
-			Branch:       "spawn/dashboard",
-		},
-		branch:       "spawn/dashboard",
-		worktreePath: "/work/dashboard",
-		output:       "tests failed\nCI job: lint\n",
-	}
-	prompt := buildDelegationPrompt(parent, "make CI green")
-	for _, expected := range []string{
-		"Target workspace: /work/dashboard",
-		"Target branch: spawn/dashboard",
-		"Parent run: run-parent",
-		"Original task: replace the dashboard",
-		"CI job: lint",
-		"make CI green",
-		"do not delete, move, or unregister the target worktree or branch",
-	} {
-		if !strings.Contains(prompt, expected) {
-			t.Errorf("delegation prompt missing %q", expected)
-		}
-	}
-}
-
-func TestSortAgentEntriesKeepsDelegationsUnderParent(t *testing.T) {
-	now := time.Now()
-	root := agentEntry{run: service.AgentRun{ID: "root", Task: "root", Managed: true, StartedAt: now}}
-	child := agentEntry{run: service.AgentRun{ID: "child", ParentRunID: "root", Task: "child", Managed: true, StartedAt: now.Add(time.Minute)}, live: true}
-	other := agentEntry{run: service.AgentRun{ID: "other", Task: "other", Managed: true, StartedAt: now.Add(-time.Minute)}}
-
-	ordered := sortAgentEntries([]agentEntry{child, other, root})
-	got := []string{ordered[0].run.ID, ordered[1].run.ID, ordered[2].run.ID}
-	want := []string{"root", "child", "other"}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("ordered ids = %v, want %v", got, want)
-		}
-	}
-}
-
-func TestAgentDashboardSelectsDelegatedChildAfterStart(t *testing.T) {
-	parent := agentEntry{run: service.AgentRun{ID: "root", Task: "parent", Managed: true}}
-	child := agentEntry{run: service.AgentRun{ID: "child", ParentRunID: "root", Task: "make CI green", Managed: true}}
-	model := newAgentDashboardModel([]agentEntry{parent}, &config.Config{}, nil, "/repo")
-
-	next, cmd := model.Update(agentActionDoneMsg{
-		agents:     []agentEntry{parent, child},
-		message:    "Delegated agent started",
-		selectedID: "child",
-	})
-	if cmd != nil {
-		t.Fatal("completed delegation returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	selected, ok := got.selected()
-	if !ok || selected.run.ID != "child" {
-		t.Fatalf("selected run = %q, want child", selected.run.ID)
-	}
-	if got.statusMessage != "Delegated agent started" {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestSortAgentEntriesKeepsCyclicRegistryRowsVisible(t *testing.T) {
-	one := agentEntry{run: service.AgentRun{ID: "one", ParentRunID: "two", Task: "one"}}
-	two := agentEntry{run: service.AgentRun{ID: "two", ParentRunID: "one", Task: "two"}}
-	ordered := sortAgentEntries([]agentEntry{one, two})
-	if len(ordered) != 2 {
-		t.Fatalf("sortAgentEntries cycle length = %d, want 2", len(ordered))
-	}
-}
-
-func TestDelegatedRunDoesNotOwnSharedWorkspace(t *testing.T) {
-	root := agentEntry{
-		run:          service.AgentRun{Managed: true},
-		worktreePath: "/work/root",
-	}
-	child := agentEntry{
-		run:          service.AgentRun{Managed: true, ParentRunID: "root"},
-		worktreePath: "/work/root",
-	}
-	if !root.ownsWorkspace() {
-		t.Fatal("root managed run should own its workspace")
-	}
-	if child.ownsWorkspace() {
-		t.Fatal("delegated run must not own its shared workspace")
 	}
 }
 
@@ -1434,11 +1070,6 @@ func TestOwnsWorkspace(t *testing.T) {
 		{
 			name:  "observed session in a plain checkout",
 			entry: agentEntry{worktreePath: "/tmp/repo"},
-			want:  false,
-		},
-		{
-			name:  "delegated child inside a worktree",
-			entry: agentEntry{run: service.AgentRun{ParentRunID: "run_parent"}, worktreePath: "/tmp/wt", isWorktree: true},
 			want:  false,
 		},
 		{
