@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	pathutil "github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
 )
@@ -34,11 +34,11 @@ func (m creatorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc":
 			return m, tea.Quit
-		case tea.KeyEnter:
+		case "enter":
 			value := strings.TrimSpace(m.textInput.Value())
 			if value != "" {
 				m.projectName = value
@@ -51,12 +51,12 @@ func (m creatorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m creatorModel) View() string {
-	return fmt.Sprintf(
+func (m creatorModel) View() tea.View {
+	return tea.NewView(fmt.Sprintf(
 		"%s\n\n%s\n\n(esc to quit)",
 		m.title,
 		m.textInput.View(),
-	)
+	))
 }
 
 func runProjectCreator(cfg projectCreatorConfig) {
@@ -64,7 +64,7 @@ func runProjectCreator(cfg projectCreatorConfig) {
 	ti.Placeholder = cfg.Placeholder
 	ti.Focus()
 	ti.CharLimit = 50
-	ti.Width = 30
+	ti.SetWidth(30)
 
 	m := creatorModel{
 		textInput: ti,

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
@@ -60,7 +60,7 @@ place.`,
 		}
 
 		model := newAgentDashboardModel(agents, cfg, registry, cwd)
-		program := tea.NewProgram(model, tea.WithAltScreen())
+		program := tea.NewProgram(model)
 		finalModel, err := program.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -390,25 +390,25 @@ func newAgentDashboardModel(agents []agentEntry, cfg *config.Config, registry *s
 	taskInput := textinput.New()
 	taskInput.Placeholder = "What should the agent do?"
 	taskInput.CharLimit = 1000
-	taskInput.Width = 72
+	taskInput.SetWidth(72)
 
 	pathInput := textinput.New()
 	pathInput.Placeholder = "/path/to/project"
 	pathInput.CharLimit = 1000
-	pathInput.Width = 72
+	pathInput.SetWidth(72)
 	baseInput := textinput.New()
 	baseInput.Placeholder = "Current branch"
 	baseInput.CharLimit = 200
-	baseInput.Width = 36
+	baseInput.SetWidth(36)
 	directoryInput := textinput.New()
 	directoryInput.Placeholder = "Filter configured projects"
 	directoryInput.CharLimit = 500
-	directoryInput.Width = 72
+	directoryInput.SetWidth(72)
 	filterInput := textinput.New()
 	filterInput.Placeholder = "Filter sessions"
 	filterInput.Prompt = "/ "
 	filterInput.CharLimit = 200
-	filterInput.Width = 72
+	filterInput.SetWidth(72)
 
 	return agentDashboardModel{
 		agents:         agents,
@@ -535,7 +535,7 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		// The input scrolls against its own width while it is being typed into,
 		// so it has to learn the terminal size here rather than at render time.
-		m.filterInput.Width = filterInputWidth(msg.Width)
+		m.filterInput.SetWidth(filterInputWidth(msg.Width))
 		return m, nil
 
 	case agentsRefreshedMsg:
@@ -572,7 +572,7 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = msg.message
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.busy {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -587,7 +587,7 @@ func (m agentDashboardModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m agentDashboardModel) updateBrowse(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.filterFocused {
 		return m.updateFilter(msg)
 	}
@@ -648,7 +648,7 @@ func (m agentDashboardModel) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateFilter owns the keyboard while the inline filter bar is focused. The
 // roster keeps rendering behind it, so up and down still move the selection.
-func (m agentDashboardModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m agentDashboardModel) updateFilter(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -707,7 +707,7 @@ func (m *agentDashboardModel) keepFilteredSelection(id string) {
 	m.cursor = 0
 }
 
-func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m agentDashboardModel) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case dashAgentsOpenDirectory:
 		switch msg.String() {
@@ -753,7 +753,7 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.syncInputFocus()
 			return m, nil
-		case "left", "right", " ":
+		case "left", "right", "space":
 			if m.focusedInput == 2 {
 				m.toggleSpawnAgent()
 				return m, nil
@@ -815,7 +815,7 @@ func (m agentDashboardModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m agentDashboardModel) updateFocusedInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m agentDashboardModel) updateFocusedInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.focusedInput {
 	case 0:
@@ -1100,7 +1100,13 @@ var (
 	dashKeyStyle   = lipgloss.NewStyle().Foreground(dashMint).Bold(true)
 )
 
-func (m agentDashboardModel) View() string {
+func (m agentDashboardModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	return view
+}
+
+func (m agentDashboardModel) render() string {
 	if m.width == 0 || m.height == 0 {
 		return "Opening agent manager…"
 	}
@@ -1491,7 +1497,7 @@ func (m agentDashboardModel) renderDirectoryPicker() string {
 			"",
 		)
 	}
-	m.directoryInput.Width = max(12, contentWidth-2)
+	m.directoryInput.SetWidth(max(12, contentWidth-2))
 	lines = append(lines,
 		lipgloss.NewStyle().Foreground(dashFaint).Render("FILTER"),
 		m.directoryInput.View(),
