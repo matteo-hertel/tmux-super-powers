@@ -198,18 +198,6 @@ func CapturePanePreview(session string, pane tmuxpkg.Pane) string {
 	return StripANSI(string(out))
 }
 
-func ReadStoredAgentOutput(path string) string {
-	target, err := delegatedOutputTarget(path)
-	if err != nil || target == "" {
-		return ""
-	}
-	data, err := os.ReadFile(target)
-	if err != nil {
-		return ""
-	}
-	return StripANSI(string(data))
-}
-
 // GitInfo holds git repository metadata for a session.
 type GitInfo struct {
 	Cwd          string // pane working directory
@@ -217,13 +205,6 @@ type GitInfo struct {
 	Branch       string
 	IsWorktree   bool
 	WorktreePath string // the worktree directory (only set when IsWorktree is true)
-}
-
-// DetectSessionGitInfo checks if a session's working directory is inside a git repo.
-// Returns the git toplevel path and current branch name, or empty strings if not a git repo.
-func DetectSessionGitInfo(sessionName string) (gitPath, branch string) {
-	info := DetectSessionGitInfoFull(sessionName)
-	return info.GitPath, info.Branch
 }
 
 // DetectSessionGitInfoFull checks if a session's working directory is inside a git repo
@@ -344,15 +325,6 @@ func CleanupEmptyParents(dir string) {
 		}
 		dir = filepath.Dir(dir)
 	}
-}
-
-// CreateSession creates a new tmux session with a two-pane layout.
-// Returns an error if the session already exists.
-func CreateSession(name, dir, leftCmd, rightCmd string) error {
-	if tmuxpkg.SessionExists(name) {
-		return fmt.Errorf("session %q already exists", name)
-	}
-	return tmuxpkg.CreateTwoPaneSession(name, dir, leftCmd, rightCmd)
 }
 
 // InterruptPane sends Ctrl-C to a running agent without deleting its session or

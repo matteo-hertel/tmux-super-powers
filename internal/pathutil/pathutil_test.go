@@ -43,33 +43,3 @@ func TestExpandPath_AbsolutePath(t *testing.T) {
 		t.Errorf("ExpandPath(\"/usr/local/bin\") = %q, want %q", got, want)
 	}
 }
-
-func TestExpandEnvVar_Set(t *testing.T) {
-	t.Setenv("EDITOR", "nvim")
-	got := ExpandEnvVar("$EDITOR")
-	if got != "nvim" {
-		t.Errorf("ExpandEnvVar(\"$EDITOR\") = %q, want \"nvim\"", got)
-	}
-}
-
-func TestExpandEnvVar_Unset(t *testing.T) {
-	t.Setenv("EDITOR", "")
-	got := ExpandEnvVar("$EDITOR")
-	if got != "" {
-		t.Errorf("ExpandEnvVar(\"$EDITOR\") = %q, want \"\"", got)
-	}
-}
-
-func TestExpandEnvVar_LiteralString(t *testing.T) {
-	got := ExpandEnvVar("vim")
-	if got != "vim" {
-		t.Errorf("ExpandEnvVar(\"vim\") = %q, want \"vim\"", got)
-	}
-}
-
-func TestExpandEnvVar_EmptyString(t *testing.T) {
-	got := ExpandEnvVar("")
-	if got != "" {
-		t.Errorf("ExpandEnvVar(\"\") = %q, want \"\"", got)
-	}
-}

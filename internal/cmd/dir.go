@@ -9,10 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/pathutil"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
@@ -56,7 +56,7 @@ var dirCmd = &cobra.Command{
 		textInput := textinput.New()
 		textInput.Placeholder = "Type to filter directories..."
 		textInput.Focus()
-		textInput.Width = 50
+		textInput.SetWidth(50)
 
 		m := dirModel{
 			list:          list.New(items, delegate, 0, 0),
@@ -69,7 +69,7 @@ var dirCmd = &cobra.Command{
 		m.list.SetShowHelp(false)
 		m.list.SetFilteringEnabled(false)
 
-		p := tea.NewProgram(m, tea.WithAltScreen())
+		p := tea.NewProgram(m)
 		finalModel, err := p.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -107,7 +107,9 @@ type dirModel struct {
 }
 
 func (m dirModel) Init() tea.Cmd {
-	return textinput.Blink
+	// Bubbles v2 no longer adapts to the terminal background on its own, so
+	// ask for it and restyle the list and filter when the answer arrives.
+	return tea.Batch(textinput.Blink, tea.RequestBackgroundColor)
 }
 
 func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -115,11 +117,20 @@ func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		isDark := msg.IsDark()
+		m.list.Styles = list.DefaultStyles(isDark)
+		delegate := list.NewDefaultDelegate()
+		delegate.Styles = list.NewDefaultItemStyles(isDark)
+		m.list.SetDelegate(delegate)
+		m.textInput.SetStyles(textinput.DefaultStyles(isDark))
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		h, v := lipgloss.NewStyle().GetFrameSize()
 		m.list.SetSize(msg.Width-h, msg.Height-v-4)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.focusMode == 0 {
 			// Filter input mode: only intercept control keys, let everything else go to textInput
 			switch msg.String() {
@@ -147,7 +158,7 @@ func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.Focus()
 				cmds = append(cmds, textinput.Blink)
 				return m, tea.Batch(cmds...)
-			case " ":
+			case "space":
 				if i, ok := m.list.SelectedItem().(dirItem); ok {
 					idx := m.list.Index()
 					i.selected = !i.selected
@@ -187,7 +198,13 @@ func (m dirModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m dirModel) View() string {
+func (m dirModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	return view
+}
+
+func (m dirModel) render() string {
 	filterStyle := lipgloss.NewStyle().MarginBottom(1)
 	if m.focusMode == 0 {
 		filterStyle = filterStyle.BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62"))

@@ -26,9 +26,9 @@ go install ./cmd/tsp
 ```bash
 tsp dir                 # Find a configured directory and open its tmux session
 tsp project             # Create a project and tmux session
-tsp list                # Select any tmux session
-tsp rm                  # Remove sessions, with optional worktree cleanup
+tsp dash                # Jump between sessions and manage agents
 tsp config              # Edit ~/.tsp/config.yaml
+tsp -v                  # Print the version
 ```
 
 ## Agent manager
@@ -54,20 +54,13 @@ filter the roster by session name, agent task, branch, or path; `Enter` keeps
 the query and `Esc` clears it. Agents `tsp` spawned stay listed after they exit
 so you can clean their worktree.
 It takes a snapshot only when it opens or when you press `r`; it does
-not poll pane output or CI. Delegation starts a new child pane in the selected
-session and retained workspace instead of injecting keystrokes into the old
-process. The task panel lets you pick Claude or Codex and edit the model for
-that run. When the delegated agent exits, its temporary pane closes and its
-bounded tmux scrollback stays available to the dashboard.
-Natural-language lifecycle requests such as `delete this worktree` resolve to
-the same exact-target confirmation used by the native Clean control; the model
-never owns workspace deletion.
+not poll pane output or CI. When it opens, it also finishes any worktree
+removal an earlier run started but did not complete.
 
 | Key | Action |
 |---|---|
 | `o` | Open a configured project in its tmux session |
 | `n` | Spawn an agent in a project |
-| `d` | Delegate follow-up work to a child agent |
 | `Enter` | Attach to the selected tmux session and pane |
 | `s` | Interrupt the agent process with `Ctrl-C` |
 | `x` | Remove the session and its managed worktree/branch |
@@ -86,21 +79,7 @@ runs in the left 80% and an empty shell runs in the right 20%. When the agent
 exits or you interrupt it, its pane stays open as a shell. `tsp` recognizes
 Claude Code, Codex, and Aider processes. Agents created by
 `tsp spawn` are recorded in `~/.tsp/agent-runs.json`, so completed agents remain
-available for delegation and deliberate cleanup. Delegated children appear
-directly beneath their parent and may run concurrently in the same retained
-workspace and tmux session; only the owning root run can remove its worktree,
-branch, and session.
-
-## Manual worktrees
-
-```bash
-tsp wtx-new feat/auth feat/billing
-tsp wtx-here
-tsp wtx-rm
-```
-
-These remain useful when you want direct worktree control. Their tmux sessions
-use the same configured agent and 80/20 layout as the other launch commands.
+listed until you clean their worktree, branch, and session with `x`.
 
 ## Configuration
 
@@ -125,29 +104,18 @@ spawn:
   claude_command: claude --dangerously-skip-permissions
   codex_command: codex --full-auto
   default_setup: ""
-
-manager:
-  default_agent: claude
-  claude:
-    command: claude -p --permission-mode auto
-    model: haiku
-  codex:
-    command: codex exec --ephemeral --sandbox workspace-write
-    model: gpt-5.6-luna
 ```
 
 `spawn.agent_command` is the default primary agent used by `dir`, `project`,
-`spawn`, dashboard New, `wtx-new`, and `wtx-here`. The Claude and Codex spawn
-commands power the provider switch in dashboard New. The `manager` section
-controls delegated agents and their default models. The delegation panel can
-override the manager agent and model for one run.
+`spawn`, and dashboard New. The Claude and Codex spawn commands power the
+provider switch in dashboard New.
 
-Old `dash`, `serve`, `watcher`, and `sandbox` keys are safely ignored by the
-YAML loader.
+Old `dash`, `serve`, `watcher`, `sandbox`, and `manager` keys are safely
+ignored by the YAML loader.
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.26+
 - tmux
 - Git for worktree-based agents
 - At least one configured agent CLI, such as `claude` or `codex`
@@ -160,5 +128,5 @@ go test ./...
 go vet ./...
 ```
 
-See [the command audit](docs/command-audit.md) for the retained and removed CLI
-surface.
+See [the command audit](docs/command-audit.md) for what is used, what was
+removed, and why.

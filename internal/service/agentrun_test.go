@@ -82,7 +82,7 @@ func TestAgentRunRegistryUpsertPersistsAndReusesRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload registry: %v", err)
 	}
-	got, ok := reloaded.Find(run.ID)
+	got, ok := reloaded.find(run.ID)
 	if !ok {
 		t.Fatalf("expected persisted run %q", run.ID)
 	}
@@ -126,8 +126,8 @@ func TestAgentRunRegistryMarksUnseenStopped(t *testing.T) {
 		t.Fatalf("MarkUnseenStopped: %v", err)
 	}
 
-	gotKeep, _ := reg.Find(keep.ID)
-	gotStop, _ := reg.Find(stop.ID)
+	gotKeep, _ := reg.find(keep.ID)
+	gotStop, _ := reg.find(stop.ID)
 	if gotKeep.Status != "active" {
 		t.Fatalf("seen run status = %q, want active", gotKeep.Status)
 	}
@@ -160,7 +160,7 @@ func TestAgentRunRegistryPrunesUnseenObservedSessions(t *testing.T) {
 	if err := reg.MarkUnseenStopped(nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.Find(run.ID); ok {
+	if _, ok := reg.find(run.ID); ok {
 		t.Fatal("unseen observed session remained in the registry")
 	}
 }
@@ -207,7 +207,7 @@ func TestAgentRunRegistryRegistersManagedAgentAndReusesIt(t *testing.T) {
 	if err := reg.Delete(managed.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, ok := reg.Find(managed.ID); ok {
+	if _, ok := reg.find(managed.ID); ok {
 		t.Fatal("deleted managed run is still present")
 	}
 }
@@ -231,122 +231,19 @@ func TestAgentRunRegistryDoesNotReplaceManagedAgentWithIdleShell(t *testing.T) {
 	if idle.ID == managed.ID {
 		t.Fatal("idle shell replaced the managed agent run")
 	}
-	got, ok := reg.Find(managed.ID)
+	got, ok := reg.find(managed.ID)
 	if !ok || got.Provider != AgentProviderClaude || got.Status != "starting" {
 		t.Fatalf("managed run was changed: %#v", got)
 	}
 }
 
-func TestAgentRunRegistryPersistsDelegationHierarchy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-runs.json")
-	reg, err := NewAgentRunRegistry(path)
-	if err != nil {
-		t.Fatalf("NewAgentRunRegistry: %v", err)
-	}
-	now := time.Date(2026, 7, 25, 14, 0, 0, 0, time.UTC)
-	root, err := reg.RegisterManaged(SpawnResult{
-		Task:         "build the agent manager",
-		Branch:       "spawn/agent-manager",
-		Session:      "tsp-agent-manager",
-		WorktreePath: "/work/tsp-agent-manager",
-		GitPath:      "/code/tsp",
-	}, AgentProviderCodex, 1, now)
-	if err != nil {
-		t.Fatalf("RegisterManaged: %v", err)
-	}
-	child, err := reg.RegisterDelegated(SpawnResult{
-		Task:         "make CI green",
-		Branch:       root.Branch,
-		Session:      "tsp-agent-manager-delegate-ci",
-		WorktreePath: root.WorktreePath,
-		GitPath:      root.GitPath,
-	}, AgentProviderClaude, root.ID, 1, now.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("RegisterDelegated: %v", err)
-	}
-	grandchild, err := reg.RegisterDelegated(SpawnResult{
-		Task:         "re-run the failing integration test",
-		Branch:       root.Branch,
-		Session:      "tsp-agent-manager-delegate-integration",
-		WorktreePath: root.WorktreePath,
-		GitPath:      root.GitPath,
-	}, AgentProviderClaude, child.ID, 1, now.Add(2*time.Minute))
-	if err != nil {
-		t.Fatalf("RegisterDelegated grandchild: %v", err)
-	}
-
-	descendants := reg.Descendants(root.ID)
-	if len(descendants) != 2 {
-		t.Fatalf("Descendants() count = %d, want 2", len(descendants))
-	}
-	if descendants[0].ID != grandchild.ID || descendants[1].ID != child.ID {
-		t.Fatalf("Descendants() = %#v, want children before parents", descendants)
-	}
-
-	reloaded, err := NewAgentRunRegistry(path)
-	if err != nil {
-		t.Fatalf("reload registry: %v", err)
-	}
-	persisted, ok := reloaded.Find(child.ID)
-	if !ok {
-		t.Fatalf("delegated run %q was not persisted", child.ID)
-	}
-	if persisted.ParentRunID != root.ID || persisted.WorktreePath != root.WorktreePath {
-		t.Fatalf("delegated metadata not preserved: %#v", persisted)
-	}
-}
-
-func TestAgentRunRegistryRequiresParentForDelegation(t *testing.T) {
-	reg, err := NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatalf("NewAgentRunRegistry: %v", err)
-	}
-	_, err = reg.RegisterDelegated(SpawnResult{Session: "delegate"}, AgentProviderClaude, "", 1, time.Now())
-	if err == nil {
-		t.Fatal("RegisterDelegated accepted an empty parent run")
-	}
-	_, err = reg.RegisterDelegated(SpawnResult{Session: "delegate"}, AgentProviderClaude, "missing", 1, time.Now())
-	if err == nil {
-		t.Fatal("RegisterDelegated accepted an unknown parent run")
-	}
-}
-
-func TestAgentRunRegistryTracksDelegatedPanesInParentSession(t *testing.T) {
-	reg, err := NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatalf("NewAgentRunRegistry: %v", err)
-	}
-	root, err := reg.RegisterManaged(SpawnResult{
-		Task: "root", Session: "shared-session", WorktreePath: "/work/shared",
-	}, AgentProviderCodex, 1, time.Now())
-	if err != nil {
-		t.Fatalf("RegisterManaged: %v", err)
-	}
-	child, err := reg.RegisterDelegated(SpawnResult{
-		Task: "child", Session: root.SessionName, WorktreePath: root.WorktreePath, OutputPath: "/tmp/delegate.log", PaneID: "%42",
-	}, AgentProviderClaude, root.ID, 2, time.Now())
-	if err != nil {
-		t.Fatalf("RegisterDelegated: %v", err)
-	}
-	if child.SessionName != root.SessionName || child.PaneIndex != 2 || child.PaneID != "%42" {
-		t.Fatalf("delegated target = %s:%d, want %s:2", child.SessionName, child.PaneIndex, root.SessionName)
-	}
-	if child.OutputPath != "/tmp/delegate.log" {
-		t.Fatalf("delegated output path = %q", child.OutputPath)
-	}
-}
-
-func TestAgentRunRegistryTracksDelegatedPaneWhenIndexMoves(t *testing.T) {
+func TestAgentRunRegistryTracksManagedPaneWhenIndexMoves(t *testing.T) {
 	reg, err := NewAgentRunRegistry("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	root, err := reg.RegisterManaged(SpawnResult{Session: "shared", WorktreePath: "/work/shared"}, AgentProviderCodex, 0, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := reg.RegisterDelegated(SpawnResult{Session: "shared", PaneID: "%42"}, AgentProviderClaude, root.ID, 1, now)
+	managed, err := reg.RegisterManaged(SpawnResult{Session: "shared", PaneID: "%42", WorktreePath: "/work/shared"}, AgentProviderClaude, 1, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +254,8 @@ func TestAgentRunRegistryTracksDelegatedPaneWhenIndexMoves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.ID != child.ID {
-		t.Fatalf("shifted pane created run %q, want %q", observed.ID, child.ID)
+	if observed.ID != managed.ID {
+		t.Fatalf("shifted pane created run %q, want %q", observed.ID, managed.ID)
 	}
 	if observed.PaneIndex != 2 {
 		t.Fatalf("shifted pane index = %d, want 2", observed.PaneIndex)
@@ -371,7 +268,7 @@ func TestAgentRunRegistryDoesNotMatchStoppedLegacyRunByPaneIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg.runs["legacy"] = AgentRun{
-		ID: "legacy", ParentRunID: "root", Provider: AgentProviderClaude, SessionName: "shared",
+		ID: "legacy", Provider: AgentProviderClaude, SessionName: "shared",
 		PaneIndex: 1, Status: "stopped", Managed: true,
 	}
 
@@ -384,68 +281,9 @@ func TestAgentRunRegistryDoesNotMatchStoppedLegacyRunByPaneIndex(t *testing.T) {
 	if observed.ID == "legacy" {
 		t.Fatal("new pane reused a stopped legacy run")
 	}
-	legacy, ok := reg.Find("legacy")
+	legacy, ok := reg.find("legacy")
 	if !ok || legacy.Status != "stopped" || legacy.PaneID != "" {
 		t.Fatalf("legacy run changed: %#v", legacy)
-	}
-}
-
-func TestAgentRunRegistryDeleteRemovesStoredOutput(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(delegatedOutputDir(), 0700); err != nil {
-		t.Fatal(err)
-	}
-	outputPath := filepath.Join(delegatedOutputDir(), "delegate-test.log")
-	if err := os.WriteFile(outputPath, []byte("finished"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reg, err := NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg.runs["child"] = AgentRun{ID: "child", OutputPath: outputPath}
-
-	if err := reg.Delete("child"); err != nil {
-		t.Fatalf("Delete() error = %v", err)
-	}
-	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
-		t.Fatalf("stored output still exists: %v", err)
-	}
-}
-
-func TestAgentRunRegistryDeleteRefusesOutputOutsideManagedDirectory(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	outputPath := filepath.Join(t.TempDir(), "delegate-test.log")
-	if err := os.WriteFile(outputPath, []byte("keep"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reg, err := NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg.runs["child"] = AgentRun{ID: "child", OutputPath: outputPath}
-
-	if err := reg.Delete("child"); err == nil {
-		t.Fatal("Delete() removed a run with an unmanaged output path")
-	}
-	if _, ok := reg.Find("child"); !ok {
-		t.Fatal("run was removed after output validation failed")
-	}
-	if _, err := os.Stat(outputPath); err != nil {
-		t.Fatalf("unmanaged output was removed: %v", err)
-	}
-}
-
-func TestAgentRunRegistryDescendantsToleratesCycle(t *testing.T) {
-	reg, err := NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatalf("NewAgentRunRegistry: %v", err)
-	}
-	reg.runs["root"] = AgentRun{ID: "root", ParentRunID: "child"}
-	reg.runs["child"] = AgentRun{ID: "child", ParentRunID: "root"}
-	descendants := reg.Descendants("root")
-	if len(descendants) != 1 || descendants[0].ID != "child" {
-		t.Fatalf("Descendants() with cycle = %#v, want only child", descendants)
 	}
 }
 
@@ -572,13 +410,6 @@ func TestAgentRunRegistryReattachesManagedRunWhosePaneClosed(t *testing.T) {
 	if second.ID == managed.ID {
 		t.Fatal("managed run moved to another pane while its own pane was open")
 	}
-	child, err := reg.RegisterDelegated(SpawnResult{
-		Task: "child", Session: "backend-sparta", PaneID: "%11",
-	}, AgentProviderClaude, second.ID, 2, now.Add(2*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	reattached, err := reg.UpsertObserved(ObservedAgentRun{
 		Provider: AgentProviderClaude, SessionName: "backend-sparta", PaneID: "%10", PaneIndex: 0,
 		PID: 300, Status: "running", SessionPaneIDs: []string{"%10", "%11"},
@@ -589,11 +420,8 @@ func TestAgentRunRegistryReattachesManagedRunWhosePaneClosed(t *testing.T) {
 	if reattached.ID != managed.ID || reattached.PaneID != "%10" || reattached.Task != "sparta" {
 		t.Fatalf("reattached run = %#v, want managed run %q on pane %s", reattached, managed.ID, "%10")
 	}
-	if _, ok := reg.Find(second.ID); ok {
+	if _, ok := reg.find(second.ID); ok {
 		t.Fatal("duplicate observed run was kept")
-	}
-	if got, _ := reg.Find(child.ID); got.ParentRunID != managed.ID {
-		t.Fatalf("child parent = %q, want %q", got.ParentRunID, managed.ID)
 	}
 }
 
@@ -612,25 +440,12 @@ func TestMergePaneDuplicatesHealsOrphanedManagedRun(t *testing.T) {
 			Branch: "spawn/tiger-87", WorktreePath: "/tmp/backend-tiger-87", GitPath: "/tmp/backend",
 			Status: "stopped", StartedAt: spawned, LastSeenAt: spawned, Managed: true,
 		},
-		{
-			ID: "run_child", ParentRunID: "run_observed", Provider: AgentProviderClaude,
-			SessionName: "backend-tiger-87", PaneID: "%70", PaneIndex: 1,
-			Status: "running", StartedAt: seen, LastSeenAt: seen, Managed: true,
-		},
 	})
 
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 runs after healing, got %d: %#v", len(merged), merged)
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 run after healing, got %d: %#v", len(merged), merged)
 	}
-	var pane, child AgentRun
-	for _, run := range merged {
-		switch run.PaneID {
-		case "%66":
-			pane = run
-		case "%70":
-			child = run
-		}
-	}
+	pane := merged[0]
 	if pane.ID != "run_managed" || !pane.Managed {
 		t.Fatalf("healed run lost its managed identity: %#v", pane)
 	}
@@ -643,8 +458,27 @@ func TestMergePaneDuplicatesHealsOrphanedManagedRun(t *testing.T) {
 	if !pane.StartedAt.Equal(spawned) {
 		t.Fatalf("healed run lost its spawn time: %#v", pane)
 	}
-	if child.ParentRunID != "run_managed" {
-		t.Fatalf("child still points at the folded run: %q", child.ParentRunID)
+}
+
+func TestAgentRunRegistryDropsLegacyDelegatedRunsOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-runs.json")
+	stored := `{"runs":[
+		{"id":"run_root","provider":"codex","task":"root","sessionName":"s","paneId":"%1","paneIndex":0,"worktreePath":"/tmp/wt","status":"running","startedAt":"2026-09-02T13:09:04Z","lastSeenAt":"2026-09-02T13:09:04Z","managed":true},
+		{"id":"run_child","parentRunId":"run_root","provider":"claude","task":"child","sessionName":"s","paneId":"%2","paneIndex":1,"worktreePath":"/tmp/wt","outputPath":"/tmp/delegate-1.log","status":"stopped","startedAt":"2026-09-02T13:10:04Z","lastSeenAt":"2026-09-02T13:10:04Z","managed":true}
+	]}`
+	if err := os.WriteFile(path, []byte(stored), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := NewAgentRunRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.find("run_child"); ok {
+		t.Fatal("legacy delegated run was loaded as a root run that owns the parent worktree")
+	}
+	if _, ok := reg.find("run_root"); !ok {
+		t.Fatal("root run was dropped with its delegated child")
 	}
 }
 
@@ -705,7 +539,7 @@ func TestAgentRunRegistryKeepsRunsWrittenByAnotherProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reloaded.Find(other.ID); !ok {
+	if _, ok := reloaded.find(other.ID); !ok {
 		t.Fatalf("concurrent spawn was dropped: %#v", reloaded.List())
 	}
 	if len(reloaded.List()) != 2 {
@@ -734,7 +568,14 @@ func TestAgentRunRegistryDoesNotResurrectDeletedRuns(t *testing.T) {
 	}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.Find(run.ID); ok {
+	if _, ok := reg.find(run.ID); ok {
 		t.Fatal("deleted run came back from disk")
 	}
+}
+
+func (r *AgentRunRegistry) find(id string) (AgentRun, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	run, ok := r.runs[id]
+	return run, ok
 }

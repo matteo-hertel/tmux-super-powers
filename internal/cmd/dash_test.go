@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/matteo-hertel/tmux-super-powers/config"
 	"github.com/matteo-hertel/tmux-super-powers/internal/service"
 	tmuxpkg "github.com/matteo-hertel/tmux-super-powers/internal/tmux"
@@ -21,72 +22,6 @@ func TestAgentDashboardDoesNotPoll(t *testing.T) {
 	if cmd := model.Init(); cmd != nil {
 		t.Fatal("dashboard Init returned a command; snapshots must refresh only on demand")
 	}
-}
-
-func TestDiscoverAgentsReadsStoredOutputAfterDelegatedPaneCloses(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not installed")
-	}
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("SHELL", "/bin/sh")
-	dir := t.TempDir()
-	session := fmt.Sprintf("tsp-dash-output-test-%d", time.Now().UnixNano())
-	if err := tmuxpkg.CreateTwoPaneSession(session, dir, "sleep 5", ""); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = tmuxpkg.KillSession(session)
-	})
-	panes := tmuxpkg.Panes(session)
-	if len(panes) != 2 {
-		t.Fatalf("pane count = %d, want 2", len(panes))
-	}
-	parentPane := panes[0]
-	for _, pane := range panes {
-		if pane.Index == 0 {
-			parentPane = pane
-		}
-	}
-	registry, err := service.NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := registry.RegisterManaged(service.SpawnResult{
-		Task: "root", Session: session, PaneIndex: parentPane.Index, PaneID: parentPane.ID, WorktreePath: dir,
-	}, service.AgentProviderCodex, parentPane.Index, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := service.SpawnDelegatedAgent(
-		"child", "child", dir, session, parentPane, "main", "",
-		"sh -c 'printf delegate-finished' placeholder", "",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := registry.RegisterDelegated(result, service.AgentProviderClaude, root.ID, result.PaneIndex, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPane := tmuxpkg.Pane{ID: result.PaneID, Index: result.PaneIndex}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && tmuxpkg.PaneExists(session, childPane) {
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	agents, err := discoverAgents(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, agent := range agents {
-		if agent.run.ID == child.ID {
-			if !strings.Contains(agent.output, "delegate-finished") {
-				t.Fatalf("stored delegated output = %q", agent.output)
-			}
-			return
-		}
-	}
-	t.Fatalf("delegated run %q was not discovered", child.ID)
 }
 
 func TestAgentDashboardKeepsSelectionVisibleAndInsideTerminal(t *testing.T) {
@@ -108,7 +43,7 @@ func TestAgentDashboardKeepsSelectionVisibleAndInsideTerminal(t *testing.T) {
 		})
 	}
 
-	view := model.View()
+	view := model.render()
 	if !strings.Contains(view, "agent task 24") {
 		t.Fatal("selected agent was not rendered")
 	}
@@ -138,7 +73,7 @@ func TestAgentDashboardBoundsWideOutput(t *testing.T) {
 	model.width = 72
 	model.height = 18
 
-	for index, line := range strings.Split(model.View(), "\n") {
+	for index, line := range strings.Split(model.render(), "\n") {
 		if width := lipgloss.Width(line); width > model.width {
 			t.Fatalf("line %d width = %d, want <= %d", index, width, model.width)
 		}
@@ -183,7 +118,7 @@ func TestAgentDashboardHeaderCountsSessionsAndAgents(t *testing.T) {
 	model.width = 100
 	model.height = 20
 
-	view := model.View()
+	view := model.render()
 	if !strings.Contains(view, "2 sessions · 3 agents · 2 running") {
 		t.Fatalf("dashboard header does not count sessions and agents: %q", view)
 	}
@@ -203,7 +138,7 @@ func TestAgentDashboardCompactRosterShowsSevenSessions(t *testing.T) {
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	model.width = 80
 	model.height = 24
-	view := model.View()
+	view := model.render()
 	if !strings.Contains(view, "session-0") || !strings.Contains(view, "session-6") {
 		t.Fatalf("compact roster did not show all seven sessions: %q", view)
 	}
@@ -243,7 +178,7 @@ func TestDiscoverAgentsListsSessionWithoutAgent(t *testing.T) {
 
 func TestAgentDashboardOpensSpawnFormWithCurrentProject(t *testing.T) {
 	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	next, cmd := model.Update(keyPress("n"))
 	if cmd != nil {
 		t.Fatal("opening spawn form returned an unexpected command")
 	}
@@ -269,7 +204,7 @@ func TestAgentDashboardOpensConfiguredDirectoryPicker(t *testing.T) {
 		}
 	}
 	model := newAgentDashboardModel(nil, &config.Config{Directories: []string{alpha, beta}}, nil, root)
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	next, cmd := model.Update(keyPress("o"))
 	if cmd != nil {
 		t.Fatal("opening the directory picker returned an unexpected command")
 	}
@@ -295,14 +230,14 @@ func TestAgentDashboardFiltersAndChoosesDirectory(t *testing.T) {
 		}
 	}
 	model := newAgentDashboardModel(nil, &config.Config{Directories: []string{alpha, beta}}, nil, root)
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	next, _ := model.Update(keyPress("o"))
 	got := next.(agentDashboardModel)
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
+	next, _ = got.Update(keyPress("beta"))
 	got = next.(agentDashboardModel)
 	if len(got.filteredDirectories) != 1 || got.filteredDirectories[0] != beta {
 		t.Fatalf("filtered directories = %#v, want beta", got.filteredDirectories)
 	}
-	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, cmd := got.Update(keyPress("enter"))
 	got = next.(agentDashboardModel)
 	if cmd == nil {
 		t.Fatal("choosing a directory did not quit the dashboard")
@@ -321,12 +256,12 @@ func TestAgentDashboardDirectoryPickerMovesAndStaysBounded(t *testing.T) {
 	model.filteredDirectories = append([]string(nil), model.directories...)
 	model.directoryInput.Focus()
 
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, _ := model.Update(keyPress("down"))
 	got := next.(agentDashboardModel)
 	if got.directoryCursor != 1 {
 		t.Fatalf("directory cursor = %d, want 1", got.directoryCursor)
 	}
-	view := got.View()
+	view := got.render()
 	if !strings.Contains(view, "beta") {
 		t.Fatalf("selected directory missing from picker: %q", view)
 	}
@@ -348,12 +283,12 @@ func TestAgentDashboardShowsOpenShortcut(t *testing.T) {
 	model := newAgentDashboardModel(nil, &config.Config{}, nil, "/repo")
 	model.width = 100
 	model.height = 20
-	view := model.View()
+	view := model.render()
 	if !strings.Contains(view, "o open") {
 		t.Fatalf("dashboard footer is missing open shortcut: %q", view)
 	}
 	model.mode = dashAgentsHelp
-	if !strings.Contains(model.View(), "Open a configured directory") {
+	if !strings.Contains(model.render(), "Open a configured directory") {
 		t.Fatal("dashboard help is missing the open shortcut")
 	}
 }
@@ -396,19 +331,19 @@ func TestAgentDashboardChoosesSpawnAgentAndBaseBranch(t *testing.T) {
 		CodexCommand:  "codex --full-auto",
 	}}
 	model := newAgentDashboardModel(nil, cfg, nil, t.TempDir())
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	next, _ := model.Update(keyPress("n"))
 	got := next.(agentDashboardModel)
 
 	for range 2 {
-		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+		next, _ = got.Update(keyPress("tab"))
 		got = next.(agentDashboardModel)
 	}
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
+	next, _ = got.Update(keyPress("right"))
 	got = next.(agentDashboardModel)
 	if got.spawnAgent != config.AgentCodex || got.spawnAgentCommand() != "codex --full-auto" {
 		t.Fatalf("spawn selection = %s/%s, want codex/codex --full-auto", got.spawnAgent, got.spawnAgentCommand())
 	}
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	next, _ = got.Update(keyPress("tab"))
 	got = next.(agentDashboardModel)
 	if !got.baseInput.Focused() {
 		t.Fatal("base branch input should be focused")
@@ -425,7 +360,7 @@ func TestAgentDashboardAttachesToSelectedPane(t *testing.T) {
 		run:           service.AgentRun{SessionName: "shared-session", PaneIndex: 3},
 		sessionExists: true,
 	}}, &config.Config{}, nil, "/repo")
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := model.Update(keyPress("enter"))
 	got := next.(agentDashboardModel)
 	if got.attachSession != "shared-session" || got.attachPane.Index != 3 {
 		t.Fatalf("attach target = %s:%d, want shared-session:3", got.attachSession, got.attachPane.Index)
@@ -467,7 +402,7 @@ func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
 	}
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	press := func(m agentDashboardModel, key string) agentDashboardModel {
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		next, _ := m.Update(keyPress(key))
 		return next.(agentDashboardModel)
 	}
 	visible := func(m agentDashboardModel) string {
@@ -494,7 +429,7 @@ func TestAgentDashboardFoldsSessionsWithHAndL(t *testing.T) {
 		t.Fatalf("h did not fold back to the session: selected %q, rows %s", selected.key(), visible(model))
 	}
 
-	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Delegated agent started", selectedID: "run-a"})
+	next, _ := model.Update(agentActionDoneMsg{agents: entries, message: "Agent spawned", selectedID: "run-a"})
 	model = next.(agentDashboardModel)
 	if selected, _ := model.selected(); selected.key() != "run-a" {
 		t.Fatalf("new agent in a collapsed session was not revealed: %q", selected.key())
@@ -541,19 +476,7 @@ func filterRosterEntries() []agentEntry {
 
 func pressKey(t *testing.T, model agentDashboardModel, key string) (agentDashboardModel, tea.Cmd) {
 	t.Helper()
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
-	switch key {
-	case "enter":
-		msg = tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		msg = tea.KeyMsg{Type: tea.KeyEsc}
-	case "ctrl+c":
-		msg = tea.KeyMsg{Type: tea.KeyCtrlC}
-	case " ":
-		// A real space arrives as KeySpace carrying its rune.
-		msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
-	}
-	next, cmd := model.Update(msg)
+	next, cmd := model.Update(keyPress(key))
 	return next.(agentDashboardModel), cmd
 }
 
@@ -705,7 +628,7 @@ func TestAgentDashboardFilterRefocusesAndReportsSessionCounts(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{120, 42}, {72, 24}} {
 		model.width = size.width
 		model.height = size.height
-		view := model.View()
+		view := model.render()
 		if !strings.Contains(view, "FILTER") {
 			t.Fatalf("filter bar missing at %dx%d: %q", size.width, size.height, view)
 		}
@@ -730,7 +653,8 @@ func TestAgentDashboardFilterRefocusesAndReportsSessionCounts(t *testing.T) {
 	if !refocused.filterFocused || refocused.filterQuery() != "parser" {
 		t.Fatalf("/ did not refocus the existing query: focused=%t query=%q", refocused.filterFocused, refocused.filterQuery())
 	}
-	if view := refocused.View(); !strings.Contains(view, "enter apply") || !strings.Contains(view, "esc clear") {
+	// Lip Gloss v2 always writes color codes; Bubble Tea strips them at output.
+	if view := ansi.Strip(refocused.render()); !strings.Contains(view, "enter apply") || !strings.Contains(view, "esc clear") {
 		t.Fatalf("focused filter footer = %q", view)
 	}
 }
@@ -748,7 +672,7 @@ func TestAgentDashboardFilterWithoutMatchesEmptiesRosterAndDetail(t *testing.T) 
 	if detail := model.renderDetail(60, 16); detail != "" {
 		t.Fatalf("detail pane rendered for an empty roster: %q", detail)
 	}
-	if view := model.View(); !strings.Contains(view, "No sessions match this filter.") {
+	if view := model.render(); !strings.Contains(view, "No sessions match this filter.") {
 		t.Fatalf("empty filter result is not explained: %q", view)
 	}
 }
@@ -856,7 +780,7 @@ func TestAgentDashboardFilterScrollsLongQueryIntoView(t *testing.T) {
 	if width := lipgloss.Width(bar); width > 60 {
 		t.Fatalf("filter bar width = %d, want <= 60", width)
 	}
-	for index, line := range strings.Split(model.View(), "\n") {
+	for index, line := range strings.Split(model.render(), "\n") {
 		if width := lipgloss.Width(line); width > 60 {
 			t.Fatalf("line %d width = %d, want <= 60", index, width)
 		}
@@ -882,18 +806,18 @@ func TestAgentDashboardFilterHeadingCombinesScrollRangeAndTotal(t *testing.T) {
 	model := newAgentDashboardModel(entries, &config.Config{}, nil, "/repo")
 	model = resizeDashboard(t, model, 120, 24)
 
-	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 30") {
+	if view := model.render(); !strings.Contains(view, "SESSIONS  1–6 / 30") {
 		t.Fatalf("unfiltered scrolling heading changed: %q", view)
 	}
 
 	model, _ = pressKey(t, model, "/")
 	model, _ = pressKey(t, model, "keep")
-	if view := model.View(); !strings.Contains(view, "SESSIONS  1–6 / 12 of 30") {
+	if view := model.render(); !strings.Contains(view, "SESSIONS  1–6 / 12 of 30") {
 		t.Fatalf("scrolling filtered heading lost the session total: %q", view)
 	}
 
 	model, _ = pressKey(t, model, "-1")
-	if view := model.View(); !strings.Contains(view, "SESSIONS  2 / 30") {
+	if view := model.render(); !strings.Contains(view, "SESSIONS  2 / 30") {
 		t.Fatalf("non-scrolling filtered heading = %q", view)
 	}
 }
@@ -914,7 +838,7 @@ func TestAgentDashboardHeadingAndHeaderShareSessionDenominator(t *testing.T) {
 	model, _ = pressKey(t, model, "/")
 	model, _ = pressKey(t, model, "alpha-live")
 
-	view := model.View()
+	view := model.render()
 	if !strings.Contains(view, "2 sessions · 1 agents · 0 running") {
 		t.Fatalf("header stopped counting only open sessions: %q", view)
 	}
@@ -936,7 +860,7 @@ func TestAgentDashboardKeepsFooterVisibleAtShortHeights(t *testing.T) {
 		{
 			run: service.AgentRun{
 				ID: "run-alpha", SessionName: "alpha", Provider: service.AgentProviderClaude,
-				Task: "rewrite the parser", CWD: "/work/alpha", ParentRunID: "",
+				Task: "rewrite the parser", CWD: "/work/alpha",
 			},
 			branch: "main", live: true, sessionExists: true,
 			output: strings.Repeat("agent output line\n", 60),
@@ -951,7 +875,7 @@ func TestAgentDashboardKeepsFooterVisibleAtShortHeights(t *testing.T) {
 
 	bounded := func(t *testing.T, model agentDashboardModel, width, height int, footer string) {
 		t.Helper()
-		lines := strings.Split(model.View(), "\n")
+		lines := strings.Split(model.render(), "\n")
 		if len(lines) > height {
 			t.Fatalf("view rendered %d lines for height %d", len(lines), height)
 		}
@@ -1063,12 +987,12 @@ func TestAgentDashboardSessionRowAttachesWithoutPaneAndCannotStop(t *testing.T) 
 		{isSession: true, run: service.AgentRun{SessionName: "alpha"}, live: true, sessionExists: true},
 	}, &config.Config{}, nil, "/repo")
 
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	next, _ := model.Update(keyPress("s"))
 	got := next.(agentDashboardModel)
 	if got.mode != dashAgentsBrowse {
 		t.Fatalf("stop on a session row opened mode %v", got.mode)
 	}
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = got.Update(keyPress("enter"))
 	got = next.(agentDashboardModel)
 	if got.attachSession != "alpha" || got.attachPane.Index != -1 {
 		t.Fatalf("attach target = %s:%d, want alpha with no pane", got.attachSession, got.attachPane.Index)
@@ -1087,7 +1011,7 @@ func TestAgentDashboardClosedSessionDoesNotAdvertiseOrSilentlyIgnoreAttach(t *te
 		t.Fatalf("closed session detail has misleading controls or state: %q", view)
 	}
 
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := model.Update(keyPress("enter"))
 	got := next.(agentDashboardModel)
 	if got.attachSession != "" {
 		t.Fatalf("closed session set attach target %q", got.attachSession)
@@ -1103,56 +1027,6 @@ func TestAgentDashboardClosedSessionDoesNotAdvertiseOrSilentlyIgnoreAttach(t *te
 	}
 }
 
-func TestAgentDashboardDoesNotSelectPaneForCompletedLegacyChild(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID: "child", ParentRunID: "root", SessionName: "shared-session", PaneIndex: 1, Status: "stopped", Managed: true,
-		},
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got := next.(agentDashboardModel)
-	if got.attachSession != "shared-session" || got.attachPane.Index != -1 {
-		t.Fatalf("completed child attach target = %s:%d", got.attachSession, got.attachPane.Index)
-	}
-}
-
-func TestRemoveDelegatedRunDoesNotKillPaneForStoppedLegacyChild(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux is not installed")
-	}
-	t.Setenv("SHELL", "/bin/sh")
-	session := fmt.Sprintf("tsp-legacy-clean-test-%d", time.Now().UnixNano())
-	if err := tmuxpkg.CreateTwoPaneSession(session, t.TempDir(), "sleep 5", ""); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = tmuxpkg.KillSession(session)
-	})
-	registry, err := service.NewAgentRunRegistry("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	registryRoot, err := registry.RegisterManaged(service.SpawnResult{Session: session}, service.AgentProviderCodex, 0, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := registry.RegisterDelegated(service.SpawnResult{Session: session}, service.AgentProviderClaude, registryRoot.ID, 1, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.MarkUnseenStopped(map[string]bool{registryRoot.ID: true}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	legacy, _ = registry.Find(legacy.ID)
-	if err := removeDelegatedRun(registry, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if len(tmuxpkg.Panes(session)) != 2 {
-		t.Fatal("legacy cleanup killed the pane that reused its index")
-	}
-}
-
 func TestProviderFromCommand(t *testing.T) {
 	tests := map[string]string{
 		"claude --dangerously-skip-permissions": service.AgentProviderClaude,
@@ -1164,254 +1038,6 @@ func TestProviderFromCommand(t *testing.T) {
 		if got := providerFromCommand(command); got != want {
 			t.Errorf("providerFromCommand(%q) = %q, want %q", command, got, want)
 		}
-	}
-}
-
-func TestAgentDashboardOpensDelegateForRetainedWorkspace(t *testing.T) {
-	cfg := &config.Config{Manager: config.ManagerConfig{
-		DefaultAgent: config.AgentClaude,
-		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
-		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
-	}}
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "implement the feature",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		sessionExists: true,
-	}}, cfg, nil, "/repo")
-
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	if cmd != nil {
-		t.Fatal("opening delegate form returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	if got.mode != dashAgentsDelegate {
-		t.Fatalf("mode = %v, want dashAgentsDelegate", got.mode)
-	}
-	if !got.taskInput.Focused() {
-		t.Fatal("delegation task input should be focused")
-	}
-	if got.managerAgent != config.AgentClaude || got.modelInput.Value() != "haiku" {
-		t.Fatalf("manager defaults = %s/%s, want claude/haiku", got.managerAgent, got.modelInput.Value())
-	}
-}
-
-func TestAgentDashboardChoosesManagerAgentAndModel(t *testing.T) {
-	cfg := &config.Config{Manager: config.ManagerConfig{
-		DefaultAgent: config.AgentClaude,
-		Claude:       config.ManagerAgentConfig{Command: "claude -p", Model: "haiku"},
-		Codex:        config.ManagerAgentConfig{Command: "codex exec", Model: "gpt-5.6-luna"},
-	}}
-	model := newAgentDashboardModel([]agentEntry{{
-		run:           service.AgentRun{SessionName: "feature", CWD: "/repo"},
-		sessionExists: true,
-	}}, cfg, nil, "/repo")
-
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	got := next.(agentDashboardModel)
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
-	got = next.(agentDashboardModel)
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
-	got = next.(agentDashboardModel)
-	if got.managerAgent != config.AgentCodex || got.modelInput.Value() != "gpt-5.6-luna" {
-		t.Fatalf("manager selection = %s/%s, want codex/gpt-5.6-luna", got.managerAgent, got.modelInput.Value())
-	}
-	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
-	got = next.(agentDashboardModel)
-	if !got.modelInput.Focused() {
-		t.Fatal("model input should be focused")
-	}
-	view := got.renderDelegate()
-	if !strings.Contains(view, "CODEX") || !strings.Contains(view, "gpt-5.6-luna") {
-		t.Fatalf("delegate form did not render the selected agent and model: %q", view)
-	}
-}
-
-func TestAgentDashboardAllowsDelegationWhileParentRuns(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "implement the feature",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		live:          true,
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-
-	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	if cmd != nil {
-		t.Fatal("opening manager task returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	got.taskInput.SetValue("make CI green")
-	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("delegation did not return a command")
-	}
-	got = next.(agentDashboardModel)
-	if !got.busy {
-		t.Fatal("dashboard should be busy while the delegated child starts")
-	}
-	if got.statusMessage != "Starting delegated agent…" {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestAgentDashboardRoutesCleanupLanguageToConfirmation(t *testing.T) {
-	model := newAgentDashboardModel([]agentEntry{{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Task:         "finished task",
-			SessionName:  "feature-session",
-			WorktreePath: "/work/feature",
-			CWD:          "/work/feature",
-			Managed:      true,
-		},
-		worktreePath:  "/work/feature",
-		sessionExists: true,
-	}}, &config.Config{}, nil, "/repo")
-
-	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	got := next.(agentDashboardModel)
-	got.taskInput.SetValue("delete this worktree")
-	next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("cleanup routing returned an unexpected command before confirmation")
-	}
-	got = next.(agentDashboardModel)
-	if got.mode != dashAgentsConfirmCleanup {
-		t.Fatalf("mode = %v, want dashAgentsConfirmCleanup", got.mode)
-	}
-	if !strings.Contains(got.statusMessage, "confirmed TSP action") {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestClassifyManagerTask(t *testing.T) {
-	tests := []struct {
-		task string
-		want managerTaskIntent
-	}{
-		{task: "make sure CI is green", want: managerIntentDelegate},
-		{task: "remove the dead code", want: managerIntentDelegate},
-		{task: "clean up the failing tests", want: managerIntentDelegate},
-		{task: "delete the stale feature branch after merging", want: managerIntentDelegate},
-		{task: "delete this worktree", want: managerIntentCleanup},
-		{task: "remove the agent workspace", want: managerIntentCleanup},
-		{task: "stop this agent", want: managerIntentStop},
-		{task: "kill the current process", want: managerIntentStop},
-	}
-	for _, test := range tests {
-		t.Run(test.task, func(t *testing.T) {
-			if got := classifyManagerTask(test.task); got != test.want {
-				t.Fatalf("classifyManagerTask(%q) = %v, want %v", test.task, got, test.want)
-			}
-		})
-	}
-}
-
-func TestBuildDelegationPromptIncludesDurableContextAndSafetyBoundary(t *testing.T) {
-	parent := agentEntry{
-		run: service.AgentRun{
-			ID:           "run-parent",
-			Provider:     service.AgentProviderCodex,
-			Task:         "replace the dashboard",
-			CWD:          "/work/dashboard",
-			WorktreePath: "/work/dashboard",
-			Branch:       "spawn/dashboard",
-		},
-		branch:       "spawn/dashboard",
-		worktreePath: "/work/dashboard",
-		output:       "tests failed\nCI job: lint\n",
-	}
-	prompt := buildDelegationPrompt(parent, "make CI green")
-	for _, expected := range []string{
-		"Target workspace: /work/dashboard",
-		"Target branch: spawn/dashboard",
-		"Parent run: run-parent",
-		"Original task: replace the dashboard",
-		"CI job: lint",
-		"make CI green",
-		"do not delete, move, or unregister the target worktree or branch",
-	} {
-		if !strings.Contains(prompt, expected) {
-			t.Errorf("delegation prompt missing %q", expected)
-		}
-	}
-}
-
-func TestSortAgentEntriesKeepsDelegationsUnderParent(t *testing.T) {
-	now := time.Now()
-	root := agentEntry{run: service.AgentRun{ID: "root", Task: "root", Managed: true, StartedAt: now}}
-	child := agentEntry{run: service.AgentRun{ID: "child", ParentRunID: "root", Task: "child", Managed: true, StartedAt: now.Add(time.Minute)}, live: true}
-	other := agentEntry{run: service.AgentRun{ID: "other", Task: "other", Managed: true, StartedAt: now.Add(-time.Minute)}}
-
-	ordered := sortAgentEntries([]agentEntry{child, other, root})
-	got := []string{ordered[0].run.ID, ordered[1].run.ID, ordered[2].run.ID}
-	want := []string{"root", "child", "other"}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("ordered ids = %v, want %v", got, want)
-		}
-	}
-}
-
-func TestAgentDashboardSelectsDelegatedChildAfterStart(t *testing.T) {
-	parent := agentEntry{run: service.AgentRun{ID: "root", Task: "parent", Managed: true}}
-	child := agentEntry{run: service.AgentRun{ID: "child", ParentRunID: "root", Task: "make CI green", Managed: true}}
-	model := newAgentDashboardModel([]agentEntry{parent}, &config.Config{}, nil, "/repo")
-
-	next, cmd := model.Update(agentActionDoneMsg{
-		agents:     []agentEntry{parent, child},
-		message:    "Delegated agent started",
-		selectedID: "child",
-	})
-	if cmd != nil {
-		t.Fatal("completed delegation returned an unexpected command")
-	}
-	got := next.(agentDashboardModel)
-	selected, ok := got.selected()
-	if !ok || selected.run.ID != "child" {
-		t.Fatalf("selected run = %q, want child", selected.run.ID)
-	}
-	if got.statusMessage != "Delegated agent started" {
-		t.Fatalf("status message = %q", got.statusMessage)
-	}
-}
-
-func TestSortAgentEntriesKeepsCyclicRegistryRowsVisible(t *testing.T) {
-	one := agentEntry{run: service.AgentRun{ID: "one", ParentRunID: "two", Task: "one"}}
-	two := agentEntry{run: service.AgentRun{ID: "two", ParentRunID: "one", Task: "two"}}
-	ordered := sortAgentEntries([]agentEntry{one, two})
-	if len(ordered) != 2 {
-		t.Fatalf("sortAgentEntries cycle length = %d, want 2", len(ordered))
-	}
-}
-
-func TestDelegatedRunDoesNotOwnSharedWorkspace(t *testing.T) {
-	root := agentEntry{
-		run:          service.AgentRun{Managed: true},
-		worktreePath: "/work/root",
-	}
-	child := agentEntry{
-		run:          service.AgentRun{Managed: true, ParentRunID: "root"},
-		worktreePath: "/work/root",
-	}
-	if !root.ownsWorkspace() {
-		t.Fatal("root managed run should own its workspace")
-	}
-	if child.ownsWorkspace() {
-		t.Fatal("delegated run must not own its shared workspace")
 	}
 }
 
@@ -1434,11 +1060,6 @@ func TestOwnsWorkspace(t *testing.T) {
 		{
 			name:  "observed session in a plain checkout",
 			entry: agentEntry{worktreePath: "/tmp/repo"},
-			want:  false,
-		},
-		{
-			name:  "delegated child inside a worktree",
-			entry: agentEntry{run: service.AgentRun{ParentRunID: "run_parent"}, worktreePath: "/tmp/wt", isWorktree: true},
 			want:  false,
 		},
 		{
@@ -1629,4 +1250,29 @@ func startFakeAgentSession(t *testing.T, dir string) string {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return session
+}
+
+// keyPress builds the key event Bubble Tea v2 delivers for a key name such as
+// "enter" or "ctrl+c", a single character, or a run of typed text.
+func keyPress(key string) tea.KeyPressMsg {
+	switch key {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "ctrl+c":
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	case " ", "space":
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+	}
+	if runes := []rune(key); len(runes) == 1 {
+		return tea.KeyPressMsg{Code: runes[0], Text: key}
+	}
+	return tea.KeyPressMsg{Code: tea.KeyExtended, Text: key}
 }
